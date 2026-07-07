@@ -2506,7 +2506,7 @@ Result linkAndOptimizeIR(
     case CodeGenTarget::SPIRVAssembly:
         if (targetProgram->getOptionSet().getBoolOption(
                 CompilerOptionName::EnableExperimentalPasses))
-            SLANG_PASS(introduceExplicitGlobalContext, target);
+            SLANG_PASS(introduceExplicitGlobalContext, target, sink);
         SLANG_PASS(transformParamsToConstRef, codeGenContext->getSink());
         break;
     case CodeGenTarget::Metal:
@@ -2522,7 +2522,7 @@ Result linkAndOptimizeIR(
     case CodeGenTarget::ShaderLLVMIR:
     case CodeGenTarget::ShaderObjectCode:
     case CodeGenTarget::ShaderHostCallable:
-        SLANG_PASS(introduceExplicitGlobalContext, target);
+        SLANG_PASS(introduceExplicitGlobalContext, target, sink);
         if (target == CodeGenTarget::CPPSource || target == CodeGenTarget::CPPHeader)
         {
             SLANG_PASS(convertEntryPointPtrParamsToRawPtrs);

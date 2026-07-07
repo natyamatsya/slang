@@ -882,5 +882,21 @@ return {
 	["DebugLexicalBlock"] = 906,
 	["Decoration.fileOrNamespaceScopeMutableVar"] = 907,
 	["Decoration.uninitializedGlobalCheckFoundPossibleWrite"] = 908,
-	["Decoration.glslPatch"] = 909
+	["Decoration.glslPatch"] = 909,
+	["Type.MetalVisibleFunctionTable"] = 910,
+	["metalRTDispatchRaysIndex"] = 911,
+	["metalRTDispatchRaysDimensions"] = 912,
+	["metalRTWorldRayOrigin"] = 913,
+	["metalRTWorldRayDirection"] = 914,
+	["metalRTRayTMin"] = 915,
+	["metalRTRayTCurrent"] = 916,
+	["metalRTRayFlags"] = 917,
+	["metalRTInstanceIndex"] = 918,
+	["metalRTInstanceID"] = 919,
+	["metalRTGeometryIndex"] = 920,
+	["metalRTPrimitiveIndex"] = 921,
+	["metalRTHitKind"] = 922,
+	["metalRTCallMissHandler"] = 923,
+	["metalRTCallHitHandler"] = 924,
+	["metalRTHandlerCall"] = 925
 }

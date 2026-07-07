@@ -1,6 +1,8 @@
 # Metal Ray-Tracing Pipeline Stages — Implementation Specification
 
-Status: **proposed** (handoff spec; runtime model validated on-device by a consumer, see §9)
+Status: **P0 implemented** (raygen + miss + closesthit, triangle geometry,
+`TraceRay` from raygen; see §10 for the implementation notes and the exact
+places where the implementation deviates from the text below)
 Target: `-target metal` support for the six ray-tracing pipeline stages
 (`raygeneration`, `miss`, `closesthit`, `anyhit`, `intersection`, `callable`).
 
@@ -325,7 +327,92 @@ The moment P0 lands, that consumer exercises it end-to-end on Metal with zero
 new test code (its Metal backend implements the §4 contract, and its existing
 lavapipe-vs-Metal comparison validates images across targets).
 
-## 10. Open questions
+## 10. P0 implementation notes (what landed, and where it deviates)
+
+P0 landed in:
+
+- `source/slang/slang-capabilities.capdef` — `raytracing` alias gained a
+  `metallib_2_4` arm; the P0 intrinsics' `[require(...)]` target lists gained
+  `metal`.
+- `source/slang/hlsl.meta.slang` — `case metal:` bodies for `TraceRay` and
+  the system-value intrinsics, plus the internal `__metalRTCall*Handler` /
+  `__metalRT*` intrinsic-op declarations.
+- `source/slang/slang-ir-insts.lua` — the transient `metalRT*` ops, the
+  emit-time `metalRTHandlerCall` op, and `MetalVisibleFunctionTableType`.
+- `source/slang/slang-ir-metal-legalize-raytracing.cpp` — the new legalizer
+  pass (`legalizeMetalRayTracing`), run first in `legalizeIRForMetal`.
+- `source/slang/slang-ir-explicit-global-context.cpp` — handler-stage entry
+  points are excluded from kernel-context parameter threading on Metal.
+- `source/slang/slang-type-layout.cpp` — Metal layout rules for the ray
+  payload / callable payload / hit attribute resource kinds (previously
+  null, which crashed entry-point layout).
+- `source/slang/slang-emit-metal.cpp` — `[[kernel]]` / `[[visible]]` stage
+  attributes, `visible_function_table<...>` type emission, and the
+  `table[index](ctx, globals)` call form.
+- Tests: `tests/metal/raytracing-pipeline*.slang`. The generated MSL for the
+  P0 pipeline compiles cleanly with the Apple `metal` compiler (`-std=metal3.1`).
+
+Deviations from the text above — the runtime-visible ones first:
+
+1. **System parameter bindings are fixed, not layout-assigned** (§4.4): the
+   raygen kernel's implicit parameters are bound at the top of Metal's
+   `[[buffer]]` index range, where normally-laid-out user parameters
+   (assigned from 0 upward) cannot collide:
+   `slang_rtGlobals` = `[[buffer(28)]]`, `slang_rtSbt` = `[[buffer(29)]]`,
+   `slang_rtHandlers` = `[[buffer(30)]]`. They are consequently not part of
+   reflection yet; layout-assigned + reflected bindings can replace this
+   later without changing the handler ABI.
+2. **No `slang_rtScene` system parameter** (§4.4): in Slang the acceleration
+   structure is the user's own global parameter (`TraceRay`'s first
+   argument), so it is bound like any other resource, exactly as the
+   already-shipping `RayQuery` path binds it. A separate implicit scene
+   binding would be a second representation of the same value.
+3. **Handler parameters are pointers, not references** (§4.2): the uniform
+   signature is `void(slang_RTContext thread*, slang_RTGlobals device*)`.
+   Both the call site and the `[[visible]]` definitions are emitted by
+   Slang from the same IR types, so the choice is self-consistent, and MSL
+   lowers references to pointers at the AIR level anyway.
+4. **Handlers keep their user-facing entry-point names** (§4.2 showed
+   `slang_miss_<mangledName>`): the application looks functions up by the
+   entry-point name it already knows; no prefix scheme is applied.
+5. **Traversal reuses the `intersection_query` lowering, not `intersector<>`**
+   (§5.1): for the P0 scope (triangle geometry, no intersection/anyhit
+   functions linked) the two Metal APIs drive the same hardware traversal
+   with identical semantics, and the query form is what the Metal backend
+   already emits and tests for `RayQuery`. Non-opaque triangle candidates
+   are committed unconditionally, which is DXR's default-accept anyhit
+   behavior when no anyhit shader exists. P1 (intersection function tables)
+   revisits this, since only `intersector<>::intersect()` accepts a
+   `MTLIntersectionFunctionTable`.
+6. **`slang_RTGlobals` hoisting is not implemented yet** (§4.3): the struct
+   exists (with one reserved `uint` field, since MSL has no empty structs)
+   and is threaded through the whole ABI, but globally bound resources are
+   not yet moved into it; a miss/closest-hit shader that references a
+   global parameter — directly or transitively through helper functions it
+   calls — is diagnosed (`metal-raytracing-global-param-in-handler`,
+   E56113) instead of silently miscompiling. As a backstop for the same
+   invariant, the kernel-context pass
+   (`slang-ir-explicit-global-context.cpp`) also diagnoses if it would ever
+   have to append a context parameter to a handler entry point, since that
+   would corrupt the fixed visible-function signature the kernel calls
+   through. Ray-generation shaders keep full access to ordinary bindings.
+7. **Payload size is a fixed 64 bytes** (§4.1): the
+   `-metal-rt-max-payload-size` option is not implemented yet; exceeding the
+   blob is a compile-time error (E56112), as specified.
+8. **`RayTCurrent()` in a miss shader** reads `ctx.hitT`, which the miss
+   dispatch fills with the ray's `TMax` — one context field serves both the
+   closest-hit and miss semantics of DXR.
+9. **Unsupported phases fail loudly**: `anyhit` / `intersection` /
+   `callable` entry points (E56110), `TraceRay` outside a raygeneration
+   entry point (E56111), unsupported intersection attribute types (E56114),
+   and ray-tracing intrinsics that survive outside any supported entry
+   point (E56115) are compile-time errors until P1–P3 land.
+10. **Reserved binding collisions are diagnosed** (follows from note 1):
+   a user resource laid out or explicitly bound at `buffer(28)` or above
+   in a program with a raygeneration entry point is rejected (E56116)
+   rather than silently double-bound against the system parameters.
+
+## 11. Open questions
 
 1. `intersector<>` inside `[[visible]]` functions (P3): believed legal (they
    are ordinary AIR functions), needs an on-device proof before committing to
