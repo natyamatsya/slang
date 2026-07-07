@@ -874,5 +874,21 @@ return {
 	["imageGatherOffset"] = 898,
 	["getNaturalAlignment"] = 899,
 	["Type.PtrTypeBase.SPIRVUntypedPtr"] = 900,
-	["Attr.TypeAlignment"] = 901
+	["Attr.TypeAlignment"] = 901,
+	["Type.MetalVisibleFunctionTable"] = 902,
+	["metalRTDispatchRaysIndex"] = 903,
+	["metalRTDispatchRaysDimensions"] = 904,
+	["metalRTWorldRayOrigin"] = 905,
+	["metalRTWorldRayDirection"] = 906,
+	["metalRTRayTMin"] = 907,
+	["metalRTRayTCurrent"] = 908,
+	["metalRTRayFlags"] = 909,
+	["metalRTInstanceIndex"] = 910,
+	["metalRTInstanceID"] = 911,
+	["metalRTGeometryIndex"] = 912,
+	["metalRTPrimitiveIndex"] = 913,
+	["metalRTHitKind"] = 914,
+	["metalRTCallMissHandler"] = 915,
+	["metalRTCallHitHandler"] = 916,
+	["metalRTHandlerCall"] = 917
 }

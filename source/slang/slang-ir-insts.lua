@@ -702,6 +702,17 @@ local insts = {
 					hoistable = true,
 				},
 			},
+			{
+				MetalVisibleFunctionTable = {
+					-- The type of a Metal `visible_function_table<T>` kernel
+					-- parameter. Operand 0 is the uniform handler function
+					-- type shared by every entry in the table, so the emitter
+					-- can spell the MSL template argument.
+					struct_name = "MetalVisibleFunctionTableType",
+					operands = { { "handlerFuncType", "IRFuncType" } },
+					hoistable = true,
+				},
+			},
 			{ CoopVectorType = { operands = { { "elementType", "IRType" }, { "elementCount" } }, hoistable = true } },
 			{
 				CoopMatrixType = {
@@ -1657,6 +1668,79 @@ local insts = {
 	-- Operand 0: register index (int literal)
 	-- Operand 1: value to write (uint32)
 	{ setOptiXPayloadRegister = { min_operands = 2 } },
+	-- Metal ray-tracing pipeline ops.
+	--
+	-- The `metalRT*` reader ops and the `metalRTCall*Handler` ops are
+	-- transient: they are produced when lowering the `case metal:` bodies of
+	-- the DXR intrinsics in hlsl.meta.slang, and are fully rewritten by
+	-- legalizeMetalRayTracing (slang-ir-metal-legalize-raytracing.cpp) into
+	-- loads/stores on the per-thread `slang_RTContext` struct plus a
+	-- `metalRTHandlerCall` through the visible function table. Only
+	-- `metalRTHandlerCall` survives to the Metal emitter.
+	--
+	-- Readers for DXR system values; each lowers to a load of the
+	-- corresponding `slang_RTContext` field.
+	{ metalRTDispatchRaysIndex = {} },
+	{ metalRTDispatchRaysDimensions = {} },
+	{ metalRTWorldRayOrigin = {} },
+	{ metalRTWorldRayDirection = {} },
+	{ metalRTRayTMin = {} },
+	{ metalRTRayTCurrent = {} },
+	{ metalRTRayFlags = {} },
+	{ metalRTInstanceIndex = {} },
+	{ metalRTInstanceID = {} },
+	{ metalRTGeometryIndex = {} },
+	{ metalRTPrimitiveIndex = {} },
+	{ metalRTHitKind = {} },
+	-- Invoke the selected miss shader through the visible function table.
+	{
+		metalRTCallMissHandler = {
+			operands = {
+				{ "missShaderIndex" },
+				{ "origin" },
+				{ "tMin" },
+				{ "direction" },
+				{ "tMax" },
+				{ "rayFlags" },
+				{ "payloadPtr" },
+			},
+		},
+	},
+	-- Invoke the selected hit-group (closest-hit) shader through the visible
+	-- function table using the DXR hit-group indexing formula.
+	{
+		metalRTCallHitHandler = {
+			operands = {
+				{ "rayContributionToHitGroupIndex" },
+				{ "multiplierForGeometryContribution" },
+				{ "instanceIndex" },
+				{ "instanceID" },
+				{ "geometryIndex" },
+				{ "primitiveIndex" },
+				{ "hitT" },
+				{ "barycentrics" },
+				{ "isFrontFace" },
+				{ "origin" },
+				{ "tMin" },
+				{ "direction" },
+				{ "tMax" },
+				{ "rayFlags" },
+				{ "payloadPtr" },
+			},
+		},
+	},
+	-- Indexed call through a Metal visible function table; emitted as
+	-- `table[index](ctx, globals)`.
+	{
+		metalRTHandlerCall = {
+			operands = {
+				{ "table" },
+				{ "index" },
+				{ "ctxPtr" },
+				{ "globalsPtr" },
+			},
+		},
+	},
 	{ GetVulkanRayTracingPayloadLocation = { min_operands = 1 } },
 	{ GetLegalizedSPIRVGlobalParamAddr = { min_operands = 1 } },
 	{

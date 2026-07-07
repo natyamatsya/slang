@@ -5725,7 +5725,7 @@ warning(
 -- Load semantic checking diagnostics (part 15) - Target code generation and platform-specific diagnostics
 -- (inlined from slang-diagnostics-semantic-checking-15.lua)
 
--- Metal or WGSL (56101-56109)
+-- Metal or WGSL (56101-56116)
 
 err(
     "resource-types-in-constant-buffer-in-parameter-block-not-allowed-on-metal",
@@ -5788,6 +5788,55 @@ err(
     56109,
     "SubpassInput in ParameterBlock not supported on Metal",
     span { loc = "location", message = "SubpassInput cannot be placed inside a ParameterBlock on Metal; framebuffer fetch inputs must be direct entry-point parameters." }
+)
+
+err(
+    "metal-raytracing-stage-not-supported",
+    56110,
+    "ray-tracing stage not yet supported for the Metal target",
+    span { loc = "location", message = "the '~stageName' stage is not yet supported for the Metal target; the supported ray-tracing pipeline stages are 'raygeneration', 'miss', and 'closesthit'." }
+)
+
+err(
+    "metal-raytracing-trace-outside-raygen",
+    56111,
+    "TraceRay outside a ray-generation shader is not yet supported for the Metal target",
+    span { loc = "location", message = "on the Metal target, 'TraceRay' may only be called from a 'raygeneration' entry point (or functions inlined into it); calling it from other ray-tracing stages is not yet supported." }
+)
+
+err(
+    "metal-raytracing-payload-too-large",
+    56112,
+    "ray payload exceeds the Metal ray-tracing payload size limit",
+    span { loc = "location", message = "ray payload type '~payloadType:IRInst' is ~payloadSize bytes, which exceeds the ~maxSize-byte payload blob of the Metal ray-tracing ABI (see docs/design/metal-raytracing.md)." }
+)
+
+err(
+    "metal-raytracing-global-param-in-handler",
+    56113,
+    "global state used in a Metal miss/closest-hit shader",
+    span { loc = "location", message = "global shader parameter or mutable global variable '~paramName:IRInst' is referenced from ray-tracing entry point '~entryPointName:IRInst'; on the Metal target, miss and closest-hit shaders cannot access globally bound resources or module-scope mutable state yet (the 'slang_RTGlobals' aggregation is not implemented)." }
+)
+
+err(
+    "metal-raytracing-attribute-type-not-supported",
+    56114,
+    "unsupported intersection attribute type for the Metal target",
+    span { loc = "location", message = "closest-hit intersection attribute type '~attributeType:IRInst' is not supported for the Metal target; only 'BuiltInTriangleIntersectionAttributes' (a struct holding a single 'float2') is supported." }
+)
+
+err(
+    "metal-raytracing-intrinsic-outside-entry-point",
+    56115,
+    "ray-tracing intrinsic used outside a supported entry point on the Metal target",
+    span { loc = "location", message = "on the Metal target, ray-tracing intrinsics may only be used inside a 'raygeneration', 'miss', or 'closesthit' entry point, or inside functions that can be inlined into one; make sure any helper function using them is not marked '[noinline]'." }
+)
+
+err(
+    "metal-raytracing-binding-collision",
+    56116,
+    "resource binding collides with the reserved Metal ray-tracing system bindings",
+    span { loc = "location", message = "global shader parameter '~paramName:IRInst' is bound at Metal buffer index ~bufferIndex, which collides with the buffer indices reserved for the ray-tracing system parameters (buffer(28) through buffer(30); see docs/design/metal-raytracing.md)." }
 )
 
 -- SPIRV (57001-57007)

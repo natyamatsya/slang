@@ -4,6 +4,7 @@
 #include "slang-ir-insts.h"
 #include "slang-ir-legalize-binary-operator.h"
 #include "slang-ir-legalize-varying-params.h"
+#include "slang-ir-metal-legalize-raytracing.h"
 #include "slang-ir-specialize-address-space.h"
 #include "slang-ir-util.h"
 #include "slang-ir.h"
@@ -422,6 +423,12 @@ void legalizeIRForMetal(IRModule* module, TargetProgram* targetProgram, Diagnost
             legalizeFuncBody(func);
         }
     }
+
+    // Rewrite ray-tracing pipeline entry points into the Metal execution
+    // model (compute kernel + visible functions) before the varying-parameter
+    // legalization below, so that by the time the latter runs, ray-tracing
+    // entry points only carry ordinary Metal-attributed parameters.
+    legalizeMetalRayTracing(module, targetProgram, sink, entryPoints);
 
     legalizeSubpassInputsForMetal(module, sink, entryPoints);
 

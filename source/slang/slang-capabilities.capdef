@@ -1358,7 +1358,7 @@ alias nvapi = hlsl_nvapi;
 
 /// Capabilities needed for minimal raytracing support
 /// [Compound]
-alias raytracing = GL_EXT_ray_tracing | _sm_6_3 | cuda;
+alias raytracing = GL_EXT_ray_tracing | _sm_6_3 | cuda | metallib_2_4;
 /// Capabilities needed for shader-execution-reordering (NVAPI path for HLSL)
 /// [Compound]
 alias ser_nvapi = raytracing + hlsl_nvapi;

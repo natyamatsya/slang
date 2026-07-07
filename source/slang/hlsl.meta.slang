@@ -19570,7 +19570,7 @@ struct RaytracingAccelerationStructure
 /// Built-in structure containing intersection attributes for triangle primitives.
 /// @category raytracing
 __target_intrinsic(hlsl, BuiltInTriangleIntersectionAttributes)
-[require(cpp_cuda_glsl_hlsl_spirv, raytracing)]
+[require(cpp_cuda_glsl_hlsl_metal_spirv, raytracing)]
 struct BuiltInTriangleIntersectionAttributes
 {
     /// Barycentric coordinates of the intersection point on the triangle.
@@ -19713,6 +19713,45 @@ __generic<Payload>
 __intrinsic_op($(kIROp_GetVulkanRayTracingPayloadLocation))
 int __rayPayloadLocation(__ref Payload payload);
 
+// Metal ray-tracing pipeline handler dispatch.
+//
+// These intrinsics carry the software-SBT half of a Metal `TraceRay` into the
+// IR so that `legalizeMetalRayTracing` (slang-ir-metal-legalize-raytracing.cpp)
+// can rewrite them: it fills the per-thread `slang_RTContext` with the ray and
+// hit state given by the operands, packs the payload into the context's
+// payload blob, computes the shader-binding-table record index, calls the
+// selected entry of the `slang_rtHandlers` visible function table, and unpacks
+// the payload blob back. See docs/design/metal-raytracing.md, section 5.
+__generic<payload_t>
+__intrinsic_op($(kIROp_MetalRTCallMissHandler))
+void __metalRTCallMissHandler(
+    uint missShaderIndex,
+    float3 origin,
+    float tMin,
+    float3 direction,
+    float tMax,
+    uint rayFlags,
+    inout payload_t payload);
+
+__generic<payload_t>
+__intrinsic_op($(kIROp_MetalRTCallHitHandler))
+void __metalRTCallHitHandler(
+    uint rayContributionToHitGroupIndex,
+    uint multiplierForGeometryContributionToHitGroupIndex,
+    uint instanceIndex,
+    uint instanceID,
+    uint geometryIndex,
+    uint primitiveIndex,
+    float hitT,
+    float2 barycentrics,
+    bool isFrontFace,
+    float3 origin,
+    float tMin,
+    float3 direction,
+    float tMax,
+    uint rayFlags,
+    inout payload_t payload);
+
 /// Traces a ray through the acceleration structure.
 /// @param AccelerationStructure The acceleration structure to traverse
 /// @param RayFlags Flags controlling ray behavior
@@ -19726,7 +19765,7 @@ int __rayPayloadLocation(__ref Payload payload);
 /// @category raytracing
 [ForceInline]
 __generic<payload_t>
-[require(cuda_glsl_hlsl_spirv, raytracing_raygen_closesthit_miss)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_raygen_closesthit_miss)]
 void TraceRay(
     RaytracingAccelerationStructure AccelerationStructure,
     uint                            RayFlags,
@@ -19797,6 +19836,57 @@ void TraceRay(
                 /**/ &p;
         };
         Payload = p;
+    }
+    case metal:
+    {
+        // Metal has no driver-level ray-tracing pipeline, so the traversal
+        // half of `TraceRay` reuses the already-lowered inline path: an
+        // `intersection_query` traced with the caller's dynamic flags. With
+        // only triangle geometry and no anyhit shaders linked (the P0 scope
+        // of docs/design/metal-raytracing.md), committing every non-opaque
+        // triangle candidate is exactly DXR's default-accept anyhit
+        // semantics. The dispatch half — filling `slang_RTContext`,
+        // computing the shader-binding-table record index, and calling the
+        // miss or hit shader through the `slang_rtHandlers` visible function
+        // table — is carried by the `__metalRTCall*Handler` intrinsics and
+        // expanded in `legalizeMetalRayTracing`.
+        RayQuery<RAY_FLAG_NONE> q;
+        q.TraceRayInline(AccelerationStructure, RayFlags, InstanceInclusionMask, Ray);
+        while (q.Proceed())
+        {
+            if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+                q.CommitNonOpaqueTriangleHit();
+        }
+        if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+        {
+            __metalRTCallHitHandler(
+                RayContributionToHitGroupIndex,
+                MultiplierForGeometryContributionToHitGroupIndex,
+                q.CommittedInstanceIndex(),
+                q.CommittedInstanceID(),
+                q.CommittedGeometryIndex(),
+                q.CommittedPrimitiveIndex(),
+                q.CommittedRayT(),
+                q.CommittedTriangleBarycentrics(),
+                q.CommittedTriangleFrontFace(),
+                Ray.Origin,
+                Ray.TMin,
+                Ray.Direction,
+                Ray.TMax,
+                RayFlags,
+                Payload);
+        }
+        else
+        {
+            __metalRTCallMissHandler(
+                MissShaderIndex,
+                Ray.Origin,
+                Ray.TMin,
+                Ray.Direction,
+                Ray.TMax,
+                RayFlags,
+                Payload);
+        }
     }
     }
 }
@@ -20014,6 +20104,40 @@ void AcceptHitAndEndSearch()
 // TODO: Many of these functions need to be restricted so that
 // they can only be accessed from specific stages.
 
+// Metal ray-tracing pipeline system-value readers.
+//
+// On the Metal target the DXR system values live in the per-thread
+// `slang_RTContext` struct: the ray-generation kernel owns it as a local
+// variable (filling the launch fields from `thread_position_in_grid` /
+// `threads_per_grid`), and miss/closest-hit shaders receive it as their
+// first parameter, filled by the `TraceRay` expansion. Each of these
+// intrinsics lowers to a load of the corresponding context field in
+// `legalizeMetalRayTracing` (slang-ir-metal-legalize-raytracing.cpp).
+__intrinsic_op($(kIROp_MetalRTDispatchRaysIndex))
+uint3 __metalRTDispatchRaysIndex();
+__intrinsic_op($(kIROp_MetalRTDispatchRaysDimensions))
+uint3 __metalRTDispatchRaysDimensions();
+__intrinsic_op($(kIROp_MetalRTWorldRayOrigin))
+float3 __metalRTWorldRayOrigin();
+__intrinsic_op($(kIROp_MetalRTWorldRayDirection))
+float3 __metalRTWorldRayDirection();
+__intrinsic_op($(kIROp_MetalRTRayTMin))
+float __metalRTRayTMin();
+__intrinsic_op($(kIROp_MetalRTRayTCurrent))
+float __metalRTRayTCurrent();
+__intrinsic_op($(kIROp_MetalRTRayFlags))
+uint __metalRTRayFlags();
+__intrinsic_op($(kIROp_MetalRTInstanceIndex))
+uint __metalRTInstanceIndex();
+__intrinsic_op($(kIROp_MetalRTInstanceID))
+uint __metalRTInstanceID();
+__intrinsic_op($(kIROp_MetalRTGeometryIndex))
+uint __metalRTGeometryIndex();
+__intrinsic_op($(kIROp_MetalRTPrimitiveIndex))
+uint __metalRTPrimitiveIndex();
+__intrinsic_op($(kIROp_MetalRTHitKind))
+uint __metalRTHitKind();
+
 // 10.4.1 - Ray Dispatch System Values
 
 /// Returns the current ray dispatch coordinates.
@@ -20021,7 +20145,7 @@ void AcceptHitAndEndSearch()
 /// @remarks Available in all ray tracing shader stages
 /// @category raytracing
 [NonUniformReturn]
-[require(cuda_glsl_hlsl_spirv, raytracing_allstages)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_allstages)]
 uint3 DispatchRaysIndex()
 {
     __target_switch
@@ -20029,6 +20153,7 @@ uint3 DispatchRaysIndex()
     case hlsl: __intrinsic_asm "DispatchRaysIndex";
     case glsl: __intrinsic_asm "(gl_LaunchIDEXT)";
     case cuda: __intrinsic_asm "optixGetLaunchIndex";
+    case metal: return __metalRTDispatchRaysIndex();
     case spirv:
         return spirv_asm
         {
@@ -20041,7 +20166,7 @@ uint3 DispatchRaysIndex()
 /// @return 3D dimensions of the ray dispatch grid
 /// @remarks Available in all ray tracing shader stages
 /// @category raytracing
-[require(cuda_glsl_hlsl_spirv, raytracing_allstages)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_allstages)]
 uint3 DispatchRaysDimensions()
 {
     __target_switch
@@ -20049,6 +20174,7 @@ uint3 DispatchRaysDimensions()
     case hlsl:  __intrinsic_asm "DispatchRaysDimensions";
     case glsl: __intrinsic_asm "(gl_LaunchSizeEXT)";
     case cuda: __intrinsic_asm "optixGetLaunchDimensions";
+    case metal: return __metalRTDispatchRaysDimensions();
     case spirv:
         return spirv_asm
         {
@@ -20064,7 +20190,7 @@ uint3 DispatchRaysDimensions()
 /// @remarks Available in any-hit, closest-hit, intersection, and miss shaders
 /// @category raytracing
 [NonUniformReturn]
-[require(cuda_glsl_hlsl_spirv, raytracing_anyhit_closesthit_intersection_miss)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_anyhit_closesthit_intersection_miss)]
 float3 WorldRayOrigin()
 {
     __target_switch
@@ -20072,6 +20198,7 @@ float3 WorldRayOrigin()
     case hlsl:  __intrinsic_asm "WorldRayOrigin";
     case glsl: __intrinsic_asm "(gl_WorldRayOriginEXT)";
     case cuda: __intrinsic_asm "optixGetWorldRayOrigin";
+    case metal: return __metalRTWorldRayOrigin();
     case spirv:
         return spirv_asm
         {
@@ -20085,7 +20212,7 @@ float3 WorldRayOrigin()
 /// @remarks Available in any-hit, closest-hit, intersection, and miss shaders
 /// @category raytracing
 [NonUniformReturn]
-[require(cuda_glsl_hlsl_spirv, raytracing_anyhit_closesthit_intersection_miss)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_anyhit_closesthit_intersection_miss)]
 float3 WorldRayDirection()
 {
     __target_switch
@@ -20093,6 +20220,7 @@ float3 WorldRayDirection()
     case hlsl:  __intrinsic_asm "WorldRayDirection";
     case glsl: __intrinsic_asm "(gl_WorldRayDirectionEXT)";
     case cuda: __intrinsic_asm "optixGetWorldRayDirection";
+    case metal: return __metalRTWorldRayDirection();
     case spirv:
         return spirv_asm
         {
@@ -20106,7 +20234,7 @@ float3 WorldRayDirection()
 /// @remarks Used to prevent self-intersections and near-plane clipping
 /// @category raytracing
 [NonUniformReturn]
-[require(cuda_glsl_hlsl_spirv, raytracing_anyhit_closesthit_intersection_miss)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_anyhit_closesthit_intersection_miss)]
 float RayTMin()
 {
     __target_switch
@@ -20114,6 +20242,7 @@ float RayTMin()
     case hlsl:  __intrinsic_asm "RayTMin";
     case glsl: __intrinsic_asm "(gl_RayTminEXT)";
     case cuda: __intrinsic_asm "optixGetRayTmin";
+    case metal: return __metalRTRayTMin();
     case spirv:
         return spirv_asm
         {
@@ -20138,7 +20267,7 @@ float RayTMin()
 /// @remarks Interpretation depends on shader stage (hit vs. intersection)
 /// @category raytracing
 [NonUniformReturn]
-[require(cuda_glsl_hlsl_spirv, raytracing_anyhit_closesthit_intersection_miss)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_anyhit_closesthit_intersection_miss)]
 float RayTCurrent()
 {
     __target_switch
@@ -20146,6 +20275,7 @@ float RayTCurrent()
     case hlsl:  __intrinsic_asm "RayTCurrent";
     case glsl: __intrinsic_asm "(gl_RayTmaxEXT)";
     case cuda: __intrinsic_asm "optixGetRayTmax";
+    case metal: return __metalRTRayTCurrent();
     case spirv:
         return spirv_asm
         {
@@ -20158,7 +20288,7 @@ float RayTCurrent()
 /// @return Combination of RAY_FLAG values used for this ray
 /// @remarks Allows shaders to modify behavior based on ray trace flags
 /// @category raytracing
-[require(cuda_glsl_hlsl_spirv, raytracing_anyhit_closesthit_intersection_miss)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_anyhit_closesthit_intersection_miss)]
 uint RayFlags()
 {
     __target_switch
@@ -20166,6 +20296,7 @@ uint RayFlags()
     case hlsl:  __intrinsic_asm "RayFlags";
     case glsl: __intrinsic_asm "(gl_IncomingRayFlagsEXT)";
     case cuda: __intrinsic_asm "optixGetRayFlags";
+    case metal: return __metalRTRayFlags();
     case spirv:
         return spirv_asm
         {
@@ -20181,7 +20312,7 @@ uint RayFlags()
 /// @remarks Available in any-hit, closest-hit, and intersection shaders
 /// @category raytracing
 [NonUniformReturn]
-[require(cuda_glsl_hlsl_spirv, raytracing_anyhit_closesthit_intersection)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_anyhit_closesthit_intersection)]
 uint InstanceIndex()
 {
     __target_switch
@@ -20189,6 +20320,7 @@ uint InstanceIndex()
     case hlsl:  __intrinsic_asm "InstanceIndex";
     case glsl: __intrinsic_asm "(gl_InstanceID)";
     case cuda: __intrinsic_asm "optixGetInstanceIndex";
+    case metal: return __metalRTInstanceIndex();
     case spirv:
         return spirv_asm
         {
@@ -20202,7 +20334,7 @@ uint InstanceIndex()
 /// @remarks Used for instance-specific shader behavior
 /// @category raytracing
 [NonUniformReturn]
-[require(cuda_glsl_hlsl_spirv, raytracing_anyhit_closesthit_intersection)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_anyhit_closesthit_intersection)]
 uint InstanceID()
 {
     __target_switch
@@ -20210,6 +20342,7 @@ uint InstanceID()
     case hlsl:  __intrinsic_asm "InstanceID";
     case glsl: __intrinsic_asm "(gl_InstanceCustomIndexEXT)";
     case cuda: __intrinsic_asm "optixGetInstanceId";
+    case metal: return __metalRTInstanceID();
     case spirv:
         return spirv_asm
         {
@@ -20223,7 +20356,7 @@ uint InstanceID()
 /// @remarks Available in any-hit, closest-hit, and intersection shaders
 /// @category raytracing
 [NonUniformReturn]
-[require(cuda_glsl_hlsl_spirv, raytracing_anyhit_closesthit_intersection)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_anyhit_closesthit_intersection)]
 uint PrimitiveIndex()
 {
     __target_switch
@@ -20231,6 +20364,7 @@ uint PrimitiveIndex()
     case hlsl:  __intrinsic_asm "PrimitiveIndex";
     case glsl: __intrinsic_asm "(gl_PrimitiveID)";
     case cuda: __intrinsic_asm "optixGetPrimitiveIndex";
+    case metal: return __metalRTPrimitiveIndex();
     case spirv:
         return spirv_asm
         {
@@ -20548,7 +20682,7 @@ bool IsLssHit()
 /// @remarks Available in any-hit and closest-hit shaders
 /// @category raytracing
 [NonUniformReturn]
-[require(cuda_glsl_hlsl_spirv, raytracing_anyhit_closesthit)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_anyhit_closesthit)]
 uint HitKind()
 {
     __target_switch
@@ -20556,6 +20690,7 @@ uint HitKind()
     case hlsl:  __intrinsic_asm "HitKind";
     case glsl: __intrinsic_asm "(gl_HitKindEXT)";
     case cuda:  __intrinsic_asm "optixGetHitKind";
+    case metal: return __metalRTHitKind();
     case spirv:
         return spirv_asm
         {
@@ -21079,13 +21214,14 @@ extension<T> _Texture<T,__Shape2D, 1, 0, 0, $(kCoreModule_ResourceAccessFeedback
 /// @category raytracing
 __glsl_extension(GL_EXT_ray_tracing)
 [NonUniformReturn]
-[require(glsl_hlsl_spirv, raytracing_anyhit_closesthit_intersection)]
+[require(glsl_hlsl_metal_spirv, raytracing_anyhit_closesthit_intersection)]
 uint GeometryIndex()
 {
     __target_switch
     {
     case hlsl: __intrinsic_asm "GeometryIndex";
     case glsl: __intrinsic_asm "(gl_GeometryIndexEXT)";
+    case metal: return __metalRTGeometryIndex();
     case spirv: return spirv_asm {
             result:$$uint = OpLoad builtin(RayGeometryIndexKHR:uint);
         };

@@ -2334,7 +2334,7 @@ Result linkAndOptimizeIR(
         SLANG_PASS(moveGlobalVarInitializationToEntryPoints, targetProgram);
         if (targetProgram->getOptionSet().getBoolOption(
                 CompilerOptionName::EnableExperimentalPasses))
-            SLANG_PASS(introduceExplicitGlobalContext, target);
+            SLANG_PASS(introduceExplicitGlobalContext, target, sink);
         SLANG_PASS(transformParamsToConstRef, codeGenContext->getSink());
         break;
     case CodeGenTarget::Metal:
@@ -2357,7 +2357,7 @@ Result linkAndOptimizeIR(
     case CodeGenTarget::ShaderObjectCode:
     case CodeGenTarget::ShaderHostCallable:
         SLANG_PASS(moveGlobalVarInitializationToEntryPoints, targetProgram);
-        SLANG_PASS(introduceExplicitGlobalContext, target);
+        SLANG_PASS(introduceExplicitGlobalContext, target, sink);
         if (target == CodeGenTarget::CPPSource || target == CodeGenTarget::CPPHeader)
         {
             SLANG_PASS(convertEntryPointPtrParamsToRawPtrs);

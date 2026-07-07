@@ -259,6 +259,24 @@ void MetalSourceEmitter::emitEntryPointAttributesImpl(
         emitRequiredThreadsPerThreadgroup();
         m_writer->emit("[[object]] ");
         break;
+    // Ray-tracing pipeline stages (docs/design/metal-raytracing.md): Metal
+    // has no driver-level ray-tracing pipeline, so a ray-generation shader
+    // is emitted as the compute kernel that drives traversal, while miss and
+    // closest-hit shaders become `[[visible]]` functions that the kernel
+    // invokes through a visible function table. (`legalizeMetalRayTracing`
+    // has already rewritten their signatures accordingly.)
+    case Stage::RayGeneration:
+        m_writer->emit("[[kernel]] ");
+        break;
+    case Stage::Miss:
+    case Stage::ClosestHit:
+    // Callable is forward-looking: callable shaders share the visible-
+    // function lowering but are still rejected by legalizeMetalRayTracing
+    // (E56110) until phase P2 of the design doc lands, so this case is not
+    // reachable yet.
+    case Stage::Callable:
+        m_writer->emit("[[visible]] ");
+        break;
     default:
         SLANG_ABORT_COMPILATION("unsupported stage.");
     }
@@ -724,6 +742,26 @@ bool MetalSourceEmitter::tryEmitInstExprImpl(IRInst* inst, const EmitOpInfo& inO
 {
     switch (inst->getOp())
     {
+    case kIROp_MetalRTHandlerCall:
+        {
+            // The indexed call through the visible function table that
+            // dispatches a miss/closest-hit shader:
+            // `slang_rtHandlers[recordIndex](ctx, globals)`.
+            auto handlerCall = cast<IRMetalRTHandlerCall>(inst);
+            EmitOpInfo outerPrec = inOuterPrec;
+            auto prec = getInfo(EmitOp::Postfix);
+            bool needClose = maybeEmitParens(outerPrec, prec);
+            emitOperand(handlerCall->getTable(), leftSide(outerPrec, prec));
+            m_writer->emit("[");
+            emitOperand(handlerCall->getIndex(), getInfo(EmitOp::General));
+            m_writer->emit("](");
+            emitOperand(handlerCall->getCtxPtr(), getInfo(EmitOp::General));
+            m_writer->emit(", ");
+            emitOperand(handlerCall->getGlobalsPtr(), getInfo(EmitOp::General));
+            m_writer->emit(")");
+            maybeCloseParens(needClose);
+            return true;
+        }
     case kIROp_MakeVector:
     case kIROp_MakeMatrix:
     case kIROp_MakeVectorFromScalar:
@@ -1349,6 +1387,27 @@ void MetalSourceEmitter::emitSimpleTypeImpl(IRType* type)
         {
             m_writer->emit("raytracing::intersection_query<raytracing::triangle_data, "
                            "raytracing::instancing>");
+            return;
+        }
+    case kIROp_MetalVisibleFunctionTableType:
+        {
+            // `visible_function_table<R(Params...)>`, spelling the uniform
+            // handler function type from the type's operand so every table
+            // entry shares the one signature required for shader-binding-table
+            // semantics (docs/design/metal-raytracing.md section 4.2).
+            auto funcType = cast<IRMetalVisibleFunctionTableType>(type)->getHandlerFuncType();
+            m_writer->emit("visible_function_table<");
+            emitType(funcType->getResultType());
+            m_writer->emit("(");
+            bool first = true;
+            for (auto paramType : funcType->getParamTypes())
+            {
+                if (!first)
+                    m_writer->emit(", ");
+                first = false;
+                emitType(paramType);
+            }
+            m_writer->emit(")>");
             return;
         }
     case kIROp_ParameterBlockType:

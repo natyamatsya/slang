@@ -3,10 +3,36 @@
 
 #include "slang-ir-clone.h"
 #include "slang-ir-insts.h"
+#include "slang-ir-metal-legalize-raytracing.h"
 #include "slang-ir-util.h"
+#include "slang-rich-diagnostics.h"
 
 namespace Slang
 {
+
+/// Is `func` a ray-tracing entry point that the Metal target emits as a
+/// `[[visible]]` function invoked through a visible function table?
+///
+/// Such functions have a fixed ABI (docs/design/metal-raytracing.md section
+/// 4.2): they can neither declare resource-binding parameters nor grow extra
+/// context parameters, so this pass must never thread the kernel context
+/// into them.
+static bool isMetalRayTracingHandlerEntryPoint(CodeGenTarget target, IRFunc* func)
+{
+    switch (target)
+    {
+    case CodeGenTarget::Metal:
+    case CodeGenTarget::MetalLib:
+    case CodeGenTarget::MetalLibAssembly:
+        break;
+    default:
+        return false;
+    }
+    auto entryPointDecor = func->findDecoration<IREntryPointDecoration>();
+    if (!entryPointDecor)
+        return false;
+    return isMetalRayTracingHandlerStage(entryPointDecor->getProfile().getStage());
+}
 
 // The job of this pass is take global-scope declarations
 // that are actually scoped to a single shader thread or
@@ -130,13 +156,14 @@ struct IntroduceExplicitGlobalContextPass
         CodeGenTarget target;
     };
 
-    IntroduceExplicitGlobalContextPass(IRModule* module, CodeGenTarget target)
-        : m_module(module), m_target(target), m_options(target)
+    IntroduceExplicitGlobalContextPass(IRModule* module, CodeGenTarget target, DiagnosticSink* sink)
+        : m_module(module), m_target(target), m_sink(sink), m_options(target)
     {
     }
 
     IRModule* m_module = nullptr;
     CodeGenTarget m_target = CodeGenTarget::Unknown;
+    DiagnosticSink* m_sink = nullptr;
 
     IRStructType* m_contextStructType = nullptr;
     IRPtrType* m_contextStructPtrType = nullptr;
@@ -276,6 +303,18 @@ struct IntroduceExplicitGlobalContextPass
                     //
                     auto func = cast<IRFunc>(inst);
                     if (!func->findDecoration<IREntryPointDecoration>())
+                        continue;
+
+                    // Metal ray-tracing handler entry points have a fixed
+                    // visible-function ABI and must not receive the
+                    // kernel-context parameters; their access to globals is
+                    // defined to go through `slang_RTGlobals` instead
+                    // (docs/design/metal-raytracing.md section 4.3), and
+                    // `legalizeMetalRayTracing` has already diagnosed any use
+                    // of a global from such a stage. The ray-generation stage
+                    // is the compute kernel itself and keeps its ordinary
+                    // bindings.
+                    if (isMetalRayTracingHandlerEntryPoint(m_target, func))
                         continue;
 
                     m_entryPoints.add(func);
@@ -636,7 +675,7 @@ struct IntroduceExplicitGlobalContextPass
             // At each use site, we need to look up the context
             // pointer that is appropriate for that use.
             //
-            auto contextParam = findOrCreateContextPtrForInst(user);
+            auto contextParam = findOrCreateContextPtrForInst(user, globalParam);
             builder.setInsertBefore(user);
 
             // The value of the parameter can be produced by
@@ -693,7 +732,7 @@ struct IntroduceExplicitGlobalContextPass
             // At each use site, we need to look up the context
             // pointer that is appropriate for that use.
             //
-            auto contextParam = findOrCreateContextPtrForInst(user);
+            auto contextParam = findOrCreateContextPtrForInst(user, globalVar);
             builder.setInsertBefore(user);
 
             // The address of the variable can be produced by
@@ -713,7 +752,7 @@ struct IntroduceExplicitGlobalContextPass
         globalVar->removeAndDeallocate();
     }
 
-    IRInst* findOrCreateContextPtrForInst(IRInst* inst)
+    IRInst* findOrCreateContextPtrForInst(IRInst* inst, IRInst* originatingGlobal = nullptr)
     {
         // When looking up the context pointer to use for
         // an instruction, we need to find the enclosing
@@ -723,7 +762,7 @@ struct IntroduceExplicitGlobalContextPass
         {
             if (auto func = as<IRFunc>(i))
             {
-                return findOrCreateContextPtrForFunc(func);
+                return findOrCreateContextPtrForFunc(func, originatingGlobal);
             }
         }
 
@@ -735,7 +774,7 @@ struct IntroduceExplicitGlobalContextPass
         UNREACHABLE_RETURN(nullptr);
     }
 
-    IRInst* findOrCreateContextPtrForFunc(IRFunc* func)
+    IRInst* findOrCreateContextPtrForFunc(IRFunc* func, IRInst* originatingGlobal = nullptr)
     {
         // At this point we are being asked to either find or
         // produce a context pointer for use inside `func`.
@@ -746,6 +785,22 @@ struct IntroduceExplicitGlobalContextPass
         if (auto found = m_mapFuncToContextPtr.tryGetValue(func))
         {
             return *found;
+        }
+
+        // A Metal ray-tracing handler entry point was deliberately excluded
+        // from `m_entryPoints`, so requesting a context pointer for one here
+        // means a global is (transitively) referenced from it — appending a
+        // context parameter would silently corrupt its fixed
+        // visible-function ABI. `legalizeMetalRayTracing` diagnoses direct
+        // and call-graph-reachable global uses before this pass runs; this
+        // is the backstop that keeps any escape loud instead of a runtime
+        // dispatch through a mismatched function signature.
+        if (isMetalRayTracingHandlerEntryPoint(m_target, func))
+        {
+            m_sink->diagnose(Diagnostics::MetalRaytracingGlobalParamInHandler{
+                .paramName = originatingGlobal ? originatingGlobal : m_contextStructType,
+                .entryPointName = func,
+                .location = getDiagnosticPos(func)});
         }
 
         // Otherwise, we are going to need to introduce an
@@ -855,9 +910,9 @@ struct IntroduceExplicitGlobalContextPass
 };
 
 /// Collect global-scope variables/paramters to form an explicit context that gets threaded through
-void introduceExplicitGlobalContext(IRModule* module, CodeGenTarget target)
+void introduceExplicitGlobalContext(IRModule* module, CodeGenTarget target, DiagnosticSink* sink)
 {
-    IntroduceExplicitGlobalContextPass pass(module, target);
+    IntroduceExplicitGlobalContextPass pass(module, target, sink);
     pass.processModule();
 }
 

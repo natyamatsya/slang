@@ -1300,6 +1300,13 @@ struct CUDARayTracingLayoutRulesImpl : DefaultVaryingLayoutRulesImpl
     {
     }
 };
+struct MetalRayTracingLayoutRulesImpl : DefaultVaryingLayoutRulesImpl
+{
+    MetalRayTracingLayoutRulesImpl(LayoutResourceKind kind)
+        : DefaultVaryingLayoutRulesImpl(kind)
+    {
+    }
+};
 
 DefaultLayoutRulesImpl kDefaultLayoutRulesImpl;
 Std140LayoutRulesImpl kStd140LayoutRulesImpl;
@@ -1341,6 +1348,19 @@ CUDARayTracingLayoutRulesImpl kCUDAHitAttributesParameterLayoutRulesImpl(
 
 MetalVaryingLayoutRulesImpl kMetalVaryingInputLayoutRulesImpl(LayoutResourceKind::VertexInput);
 MetalVaryingLayoutRulesImpl kMetalVaryingOutputLayoutRulesImpl(LayoutResourceKind::FragmentOutput);
+
+// On Metal the ray payload and hit attributes never occupy API-visible
+// binding slots: the legalizer bridges them through byte blobs in the
+// per-thread `slang_RTContext` (docs/design/metal-raytracing.md). They still
+// need layout rules so that entry-point layout for miss/closest-hit
+// signatures can be computed; like the other targets above, treat them as
+// varying data of the corresponding ray-tracing resource kinds.
+MetalRayTracingLayoutRulesImpl kMetalRayPayloadParameterLayoutRulesImpl(
+    LayoutResourceKind::RayPayload);
+MetalRayTracingLayoutRulesImpl kMetalCallablePayloadParameterLayoutRulesImpl(
+    LayoutResourceKind::CallablePayload);
+MetalRayTracingLayoutRulesImpl kMetalHitAttributesParameterLayoutRulesImpl(
+    LayoutResourceKind::HitAttributes);
 
 struct GLSLLayoutRulesFamilyImpl : LayoutRulesFamilyImpl
 {
@@ -2772,6 +2792,24 @@ LayoutRulesImpl kMetalVaryingOutputLayoutRulesImpl_ = {
     &kHLSLObjectLayoutRulesImpl,
 };
 
+LayoutRulesImpl kMetalRayPayloadParameterLayoutRulesImpl_ = {
+    &kMetalLayoutRulesFamilyImpl,
+    &kMetalRayPayloadParameterLayoutRulesImpl,
+    &kMetalObjectLayoutRulesImpl,
+};
+
+LayoutRulesImpl kMetalCallablePayloadParameterLayoutRulesImpl_ = {
+    &kMetalLayoutRulesFamilyImpl,
+    &kMetalCallablePayloadParameterLayoutRulesImpl,
+    &kMetalObjectLayoutRulesImpl,
+};
+
+LayoutRulesImpl kMetalHitAttributesParameterLayoutRulesImpl_ = {
+    &kMetalLayoutRulesFamilyImpl,
+    &kMetalHitAttributesParameterLayoutRulesImpl,
+    &kMetalObjectLayoutRulesImpl,
+};
+
 LayoutRulesImpl* MetalLayoutRulesFamilyImpl::getAnyValueRules()
 {
     return &kHLSLAnyValueLayoutRulesImpl_;
@@ -2834,17 +2872,17 @@ LayoutRulesImpl* MetalLayoutRulesFamilyImpl::getShaderStorageBufferRules(Compile
 
 LayoutRulesImpl* MetalLayoutRulesFamilyImpl::getRayPayloadParameterRules()
 {
-    return nullptr;
+    return &kMetalRayPayloadParameterLayoutRulesImpl_;
 }
 
 LayoutRulesImpl* MetalLayoutRulesFamilyImpl::getCallablePayloadParameterRules()
 {
-    return nullptr;
+    return &kMetalCallablePayloadParameterLayoutRulesImpl_;
 }
 
 LayoutRulesImpl* MetalLayoutRulesFamilyImpl::getHitAttributesParameterRules()
 {
-    return nullptr;
+    return &kMetalHitAttributesParameterLayoutRulesImpl_;
 }
 
 LayoutRulesImpl* MetalArgumentBufferTier2LayoutRulesFamilyImpl::getConstantBufferRules(
