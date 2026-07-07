@@ -880,5 +880,21 @@ return {
 	["Decoration.postDepthCoverage"] = 903,
 	["Decoration.AutodiffParameterContextTypeDecoration"] = 905,
 	["DebugLexicalBlock"] = 906,
-	["Decoration.fileOrNamespaceScopeStaticVar"] = 907
+	["Decoration.fileOrNamespaceScopeStaticVar"] = 907,
+	["Type.MetalVisibleFunctionTable"] = 908,
+	["metalRTDispatchRaysIndex"] = 909,
+	["metalRTDispatchRaysDimensions"] = 910,
+	["metalRTWorldRayOrigin"] = 911,
+	["metalRTWorldRayDirection"] = 912,
+	["metalRTRayTMin"] = 913,
+	["metalRTRayTCurrent"] = 914,
+	["metalRTRayFlags"] = 915,
+	["metalRTInstanceIndex"] = 916,
+	["metalRTInstanceID"] = 917,
+	["metalRTGeometryIndex"] = 918,
+	["metalRTPrimitiveIndex"] = 919,
+	["metalRTHitKind"] = 920,
+	["metalRTCallMissHandler"] = 921,
+	["metalRTCallHitHandler"] = 922,
+	["metalRTHandlerCall"] = 923
 }

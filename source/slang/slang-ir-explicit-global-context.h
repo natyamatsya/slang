@@ -8,6 +8,6 @@ namespace Slang
 struct IRModule;
 
 /// Collect global-scope variables/paramters to form an explicit context that gets threaded through
-void introduceExplicitGlobalContext(IRModule* module, CodeGenTarget target);
+void introduceExplicitGlobalContext(IRModule* module, CodeGenTarget target, DiagnosticSink* sink);
 
 } // namespace Slang
