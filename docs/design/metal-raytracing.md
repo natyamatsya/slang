@@ -1,0 +1,340 @@
+# Metal Ray-Tracing Pipeline Stages — Implementation Specification
+
+Status: **proposed** (handoff spec; runtime model validated on-device by a consumer, see §9)
+Target: `-target metal` support for the six ray-tracing pipeline stages
+(`raygeneration`, `miss`, `closesthit`, `anyhit`, `intersection`, `callable`).
+
+## 1. Summary
+
+Slang currently rejects ray-tracing pipeline entry points for the Metal target:
+
+```
+error 36107: entrypoint 'rayGenMain' uses features that are not available in
+'raygen' stage for 'metal' compilation target.
+```
+
+The gate is the `raytracing` capability alias (`source/slang/slang-capabilities.capdef:1347`):
+
+```
+alias raytracing = GL_EXT_ray_tracing | _sm_6_3 | cuda;
+```
+
+Metal has no driver-level ray-tracing pipeline (no SBT object, no
+raygen/miss/hit dispatch by the driver), but it has all the primitives to
+implement one: a compute kernel driving `metal::raytracing::intersector`,
+**visible function tables** (`MTLVisibleFunctionTable`, function pointers,
+`supportsFunctionPointers`, MSL ≥ 2.3) and **intersection function tables**
+(`MTLIntersectionFunctionTable`, consumed natively by the intersector). This
+document specifies how Slang lowers the DXR-style programming model onto those
+primitives, so that a single Slang RT code base compiles to D3D12/Vulkan/OptiX
+*and* Metal.
+
+There is precedent in-repo for lowering RT stages to a non-DXR execution model:
+the CUDA/OptiX backend (`slang-emit-cuda.cpp:494`, `CASE(RayGeneration,
+__raygen__)`, `TraceRay` → `optixTrace`). Metal follows the same shape — the
+stage semantics live in the compiler, the target supplies an unconventional
+runtime — with the extra twist that Metal's "pipeline" is assembled by the
+*application* from linked functions, which makes the **ABI contract** (§4) the
+core of this spec. The inline half of Metal ray tracing (`RayQuery` →
+`raytracing::intersection_query`) already works (`slang-emit-metal.cpp:1316`);
+this spec adds the pipeline half.
+
+## 2. Execution model mapping
+
+| DXR / Slang concept | Metal lowering |
+|---|---|
+| raygen entry point | the `[[kernel]]` compute function; launch grid = `DispatchRays` dimensions |
+| `TraceRay()` | inline `intersector<...>::intersect()` + an indexed call through the visible function table (§5) |
+| miss / closesthit / callable entry points | `[[visible]]` functions with **one uniform signature** (§4.2), registered in a `MTLVisibleFunctionTable` |
+| anyhit / intersection entry points | `[[intersection(triangle|bounding_box, instancing, ...)]]` functions in a `MTLIntersectionFunctionTable`; the intersector invokes them natively |
+| shader binding table | a small device buffer of **table indices** (region bases + per-record indices) provided by the application (§4.4); geometry→hit-group selection uses the DXR index formula (§5.2) |
+| `DispatchRays(w,h,d)` | `dispatchThreads(MTLSize(w,h,d), ...)` on the linked pipeline |
+| pipeline object | `MTLComputePipelineDescriptor` with `linkedFunctions` = all stage functions; tables created from the pipeline state |
+
+Required device features: `supportsRaytracing()` **and**
+`supportsFunctionPointers()`; MSL language version ≥ 2.4 (matches what the
+existing intersection-query emission already requires).
+
+## 3. Capability changes
+
+`source/slang/slang-capabilities.capdef`:
+
+- Extend the alias:
+  `alias raytracing = GL_EXT_ray_tracing | _sm_6_3 | cuda | metallib_2_4;`
+  This automatically opens the stage aliases (`alias raygen = _raygen +
+  raytracing;` etc., `:1478ff`) for the Metal target.
+- Features that cannot be mapped (e.g. shader execution reordering, `ser`)
+  keep their existing, narrower aliases and continue to error on Metal.
+
+## 4. The ABI contract
+
+RT stages are compiled separately (possibly in separate `MTLLibrary` objects —
+`MTLLinkedFunctions` accepts functions from any library), and the application
+assembles the pipeline. Everything below is therefore a **stable, documented
+convention** that both Slang codegen and the application runtime implement.
+
+### 4.1 The ray context
+
+All cross-stage communication goes through one thread-local struct owned by the
+kernel and passed by reference:
+
+```metal
+struct slang_RTContext
+{
+    // the ray for the *current* trace (world space)
+    float3 origin;    float tMin;
+    float3 direction; float tMax;
+    uint   rayFlags;
+    // committed-hit state, filled by the kernel after intersect()
+    float  hitT;
+    uint   instanceIndex;   // and instanceID (user), geometryIndex
+    uint   instanceID;
+    uint   geometryIndex;
+    uint   primitiveIndex;
+    uint   hitKind;
+    float2 triBarycentrics;             // triangle hits
+    uchar  attributes[SLANG_RT_MAX_ATTRIBUTE_SIZE]; // procedural hits (default 32, DXR parity)
+    // payload blob for the current trace
+    uchar  payload[SLANG_RT_MAX_PAYLOAD_SIZE];
+    // launch state
+    uint3  launchIndex;
+    uint3  launchDim;
+};
+```
+
+`SLANG_RT_MAX_PAYLOAD_SIZE` defaults to 64 bytes and is overridable by a
+compiler option (`-metal-rt-max-payload-size N`); exceeding it with a concrete
+payload type is a compile-time diagnostic. This blob approach is what DXR
+drivers do internally (payload registers) and is what makes a *single* visible
+function table type possible (§4.2).
+
+### 4.2 Visible function signature (miss / closesthit / callable)
+
+Exactly one signature, so that every record in one
+`visible_function_table` is interchangeable — i.e. real SBT semantics:
+
+```metal
+using slang_RTHandler = void(thread slang_RTContext&, device slang_RTGlobals*);
+
+[[visible]] void slang_miss_<mangledName>(thread slang_RTContext& ctx,
+                                          device slang_RTGlobals* globals);
+```
+
+The generated body unpacks the payload blob into the user's payload type at
+entry, runs the user code, and packs it back on exit (the legalizer does the
+same load/store sandwich the SPIR-V backend does for `[__vulkanRayPayload]`
+globals). Callable data uses the same blob (DXR permits distinct sizes; the
+max-size rule applies to both).
+
+### 4.3 Global resources: `slang_RTGlobals`
+
+Visible functions cannot see the kernel's bound resources; every user resource
+referenced by *any* linked stage must travel explicitly. Slang aggregates the
+union of all stages' global parameters into **one argument buffer struct**
+(`slang_RTGlobals`), laid out with the existing Metal argument-buffer /
+`ParameterBlock` machinery and exposed through reflection exactly like any
+other parameter block. The raygen kernel receives it as an ordinary
+`[[buffer(n)]]` parameter (index assigned by normal Metal binding layout) and
+threads the pointer through every handler call. Acceleration structures,
+textures and samplers inside argument buffers require argument-buffer tier 2
+devices — acceptable, since function pointers already restrict us to Apple6+/
+Mac2.
+
+### 4.4 The system parameters and the software SBT
+
+The raygen kernel gets these implicit trailing parameters (indices assigned by
+normal layout, visible in reflection):
+
+```metal
+kernel void <raygenName>(
+    /* user + slang_RTGlobals params ... */
+    instance_acceleration_structure           slang_rtScene      [[buffer(a)]],
+    visible_function_table<slang_RTHandler>   slang_rtHandlers   [[buffer(b)]],
+    intersection_function_table<triangle_data, instancing>
+                                              slang_rtIsect      [[buffer(c)]], // only if any anyhit/intersection linked
+    constant slang_RTSbt&                     slang_rtSbt        [[buffer(d)]],
+    uint3 tid  [[thread_position_in_grid]],
+    uint3 tdim [[threads_per_grid]])
+```
+
+```metal
+struct slang_RTSbt
+{
+    uint missBase;      // first miss record in slang_rtHandlers
+    uint hitBase;       // first hit-group (closesthit) record
+    uint callableBase;  // first callable record
+    uint hitStride;     // records per hit group (== MultiplierForGeometry... convention)
+    // per-instance SBT offsets (DXR InstanceContributionToHitGroupIndex);
+    // Metal's instance descriptor only carries the *intersection* table offset,
+    // so the visible-table contribution is provided here:
+    device const uint* instanceSbtOffsets;
+};
+```
+
+The application fills the tables and this buffer. This is the entire "SBT":
+region bases + indices, no GPU handles.
+
+### 4.5 Intersection / anyhit functions
+
+Emitted with Metal's fixed signatures; the payload rides in `ray_data` address
+space via `[[payload]]`, which Metal forwards from the `intersect()` call:
+
+```metal
+[[intersection(bounding_box, instancing, triangle_data)]]
+BoundingBoxResult slang_isect_<name>(
+    float3 origin [[origin]], float3 direction [[direction]],
+    float minT [[min_distance]], float maxT [[max_distance]],
+    uint primitiveIndex [[primitive_id]], uint instanceIndex [[instance_id]],
+    ray_data slang_RTContext& ctx [[payload]],
+    device slang_RTGlobals* globals /* via intersection-table buffer binding */)
+```
+
+- `ReportHit(t, kind, attrs)` → write `attrs`/`kind` into `ctx`, `return
+  { true, t }` (bounding-box) / `accept` (triangle anyhit).
+- `IgnoreHit()` → `return { false, ... }` / reject.
+- `AcceptHitAndEndSearch()` → accept + `intersector::accept_any_intersection`
+  semantics (Metal ends search when an intersection function accepts and the
+  ray was traced with `accept_any_intersection`, matching the DXR flag).
+- anyhit-only groups use Metal `triangle` intersection functions that
+  accept/reject the builtin triangle hit.
+- Table indexing: Metal's native per-geometry
+  `intersectionFunctionTableOffset` + per-instance offset carry DXR's
+  hit-group-index semantics for the intersection table; the runtime fills the
+  geometry/instance descriptors accordingly.
+
+## 5. Lowering `TraceRay` and `CallShader`
+
+### 5.1 `TraceRay` (hlsl.meta.slang `:19718` gets a `case metal:`)
+
+Lowered (by the legalizer, on IR, not string pasting) to:
+
+```metal
+ctx.origin = ray.Origin; ... ctx.rayFlags = RayFlags;
+/* pack Payload into ctx.payload */
+raytracing::ray r(ray.Origin, ray.Direction, ray.TMin, ray.TMax);
+intersector<triangle_data, instancing> i;
+/* map RayFlags: force_opacity(), accept_any_intersection(), cull mode; */
+/* i.assume_geometry_type(triangle) when no intersection/anyhit stage is linked */
+auto hit = i.intersect(r, slang_rtScene, InstanceInclusionMask
+                       /* , slang_rtIsect when linked, ctx as [[payload]] */);
+if (hit.type != intersection_type::none) {
+    /* fill ctx.hitT, instance/geometry/primitive indices, barycentrics */
+    uint idx = slang_rtSbt.hitBase
+             + RayContributionToHitGroupIndex
+             + MultiplierForGeometryContributionToHitGroupIndex * hit.geometry_id
+             + slang_rtSbt.instanceSbtOffsets[hit.instance_id];
+    slang_rtHandlers[idx](ctx, globals);
+} else {
+    slang_rtHandlers[slang_rtSbt.missBase + MissShaderIndex](ctx, globals);
+}
+/* unpack ctx.payload into Payload */
+```
+
+### 5.2 `CallShader`
+
+`slang_rtHandlers[slang_rtSbt.callableBase + index](ctx, globals)` with the
+callable data through the same blob.
+
+### 5.3 Recursion (`TraceRay` from a closesthit function)
+
+MSL visible functions are ordinary functions; the lowered trace sequence is
+legal inside them *if* the system parameters are reachable — which they are,
+since `ctx`/`globals` are parameters and the scene/tables can be threaded
+through `slang_RTGlobals`. This must be validated on-device early (P3, §8); if
+a driver restriction surfaces, the documented fallback is the standard
+megakernel iteration (the handler writes a continuation request into `ctx` and
+returns; the kernel loops). Either way `DispatchRaysIndex()` etc. keep working
+because they read `ctx`, not kernel-only builtins.
+
+## 6. Intrinsics mapping (per-stage availability as in DXR)
+
+| Slang intrinsic | Metal lowering |
+|---|---|
+| `DispatchRaysIndex/Dimensions` | `ctx.launchIndex` / `ctx.launchDim` (kernel fills from `tid`/`tdim`) |
+| `WorldRayOrigin/Direction`, `RayTMin`, `RayFlags` | `ctx` fields |
+| `RayTCurrent` | `ctx.hitT` (hit stages), `max_distance` (intersection) |
+| `InstanceIndex/InstanceID/GeometryIndex/PrimitiveIndex/HitKind` | `ctx` fields |
+| `ObjectRayOrigin/Direction` | intersection stage: `[[origin]]`/`[[direction]]` params; hit stages: computed via instance transform (below) |
+| `ObjectToWorld*/WorldToObject*` | from the intersector result (`object_to_world_transform` with the `world_space_data` tag) stored into `ctx`; `WorldToObject` computed by inversion or a runtime-provided per-instance buffer (implementation choice, P4) |
+| `ReportHit/IgnoreHit/AcceptHitAndEndSearch` | §4.5 |
+| `TraceRay` / `CallShader` | §5 |
+
+## 7. Compiler work plan (file by file)
+
+1. `slang-capabilities.capdef` — §3 alias change (one line) + any
+   per-intrinsic tightening.
+2. `hlsl.meta.slang` — `case metal:` bodies for the intrinsics; mostly thin
+   wrappers over new IR ops (`kIROp_MetalTraceRay`-style) so the real work
+   happens in the legalizer, mirroring how the GLSL path uses
+   `[__vulkanRayPayload]` globals rather than textual expansion.
+3. `slang-ir-metal-legalize.cpp` (`legalizeIRForMetal`, `:408`) — new pass:
+   - raygen: rewrite the entry to the kernel form, synthesize `slang_RTContext`,
+     append system parameters (§4.4), fill launch state;
+   - miss/closesthit/callable: rewrite to the uniform handler signature with
+     the payload pack/unpack sandwich;
+   - anyhit/intersection: rewrite to Metal intersection-function signatures,
+     map `ReportHit`/`IgnoreHit`;
+   - lower the trace/call IR ops per §5;
+   - hoist stage-global resources into the `slang_RTGlobals` argument buffer
+     (reuse the existing parameter-block-to-argument-buffer machinery).
+4. `slang-emit-metal.cpp` — stage attribute emission (the `switch` at `:233`):
+   `RayGeneration → [[kernel]]`, `Miss/ClosestHit/Callable → [[visible]]`,
+   `AnyHit/Intersection → [[intersection(...)]]` with tags derived from what
+   the program links (triangle_data, instancing, world_space_data);
+   type emission for `visible_function_table<>` /
+   `intersection_function_table<>` parameters.
+5. Reflection — no new API shape needed: the system parameters and
+   `slang_RTGlobals` appear as ordinary (auto-introduced) parameters with
+   Metal binding indices; document the naming convention so runtimes can find
+   them (`slang_rtScene`, `slang_rtHandlers`, `slang_rtIsect`, `slang_rtSbt`).
+6. Tests — `tests/metal/` compile tests per stage + intrinsic; execution
+   tests via the standard test harness where Metal execution is available.
+   An external end-to-end suite exists (§9) that validates the *same* Slang
+   source against Vulkan (lavapipe, software `VK_KHR_ray_tracing_pipeline`)
+   and Metal on-device, including an image-level cross-check.
+
+## 8. Phasing
+
+- **P0** — raygen + miss + closesthit, triangle geometry only, `TraceRay`
+  from raygen only, payload blob, `slang_RTGlobals`. (Proves the ABI; enough
+  for a Whitted-style consumer with shading in raygen.)
+- **P1** — anyhit + intersection via the intersection function table
+  (`ray_data` payload, `ReportHit` family).
+- **P2** — callables.
+- **P3** — `TraceRay` from closesthit (recursion depth 2, §5.3) — validate the
+  visible-function-intersector question on-device first.
+- **P4** — completeness: `ObjectToWorld/WorldToObject`, full ray-flag mapping,
+  multi-dimension launches, diagnostics polish (payload/attribute size limits).
+
+## 9. External validation (consumer handoff context)
+
+A bgfx fork (`github.com/natyamatsya/bgfx`, branch `experimental/rt-pipeline`
+and `experimental/metal-rt-pipeline-spike`) has:
+
+- a complete RT-pipeline runtime consuming Slang-compiled stages on Vulkan,
+  CI-able via Mesa lavapipe, with per-stage smoke tests
+  (`tools/rt-validation/rt_pipeline_smoke.cpp`) and a bit-exact ray-query
+  vs. RT-pipeline image cross-check on a Cornell Box scene;
+- an on-device Metal prototype (`tools/rt-validation/metal_rt_pipeline_spike.cpp`,
+  Apple M2 Max) of exactly the §2 mapping — visible-function SBT routing and a
+  bounding-box intersection function both verified (4096/4096 pixels, analytic
+  distance validated), i.e. **the runtime side of this spec is already proven**;
+  design notes in that repo's `METAL_RT_PIPELINE.md`.
+
+The moment P0 lands, that consumer exercises it end-to-end on Metal with zero
+new test code (its Metal backend implements the §4 contract, and its existing
+lavapipe-vs-Metal comparison validates images across targets).
+
+## 10. Open questions
+
+1. `intersector<>` inside `[[visible]]` functions (P3): believed legal (they
+   are ordinary AIR functions), needs an on-device proof before committing to
+   recursion; megakernel fallback specified.
+2. Payload blob size: fixed max (this spec) vs. per-payload-type table
+   specialization (rejected for now: breaks single-table SBT semantics and
+   explodes pipeline variants).
+3. `WorldToObject` source: intersector `world_space_data` tags vs. a
+   runtime-supplied per-instance transform buffer (P4 decision).
+4. Argument-buffer tier constraints for acceleration structures inside
+   `slang_RTGlobals` on older macOS versions — may need a minimum-OS note in
+   the user guide.
