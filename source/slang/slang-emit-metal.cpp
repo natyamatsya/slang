@@ -1478,23 +1478,15 @@ void MetalSourceEmitter::emitSimpleTypeImpl(IRType* type)
         }
     case kIROp_MetalVisibleFunctionTableType:
         {
-            // `visible_function_table<R(Params...)>`, spelling the uniform
-            // handler function type from the type's operand so every table
-            // entry shares the one signature required for shader-binding-table
-            // semantics (docs/design/metal-raytracing.md section 4.2).
-            auto funcType = cast<IRMetalVisibleFunctionTableType>(type)->getHandlerFuncType();
-            m_writer->emit("visible_function_table<");
-            emitType(funcType->getResultType());
-            m_writer->emit("(");
-            bool first = true;
-            for (auto paramType : funcType->getParamTypes())
-            {
-                if (!first)
-                    m_writer->emit(", ");
-                first = false;
-                emitType(paramType);
-            }
-            m_writer->emit(")>");
+            // The uniform handler signature of the ray-tracing ABI
+            // (docs/design/metal-raytracing.md section 4.2), spelled with
+            // the pinned struct names that legalizeMetalRayTracing emits.
+            // It is not carried as a type operand because the table appears
+            // as a field of `slang_RTGlobals` itself, which would make the
+            // type cyclic.
+            ensurePrelude(kMetalBuiltinPreludeRTForwardDecls);
+            m_writer->emit("visible_function_table<void(slang_RTContext thread*, "
+                           "slang_RTGlobals device*)>");
             return;
         }
     case kIROp_ParameterBlockType:

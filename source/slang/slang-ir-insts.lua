@@ -704,12 +704,15 @@ local insts = {
 			},
 			{
 				MetalVisibleFunctionTable = {
-					-- The type of a Metal `visible_function_table<T>` kernel
-					-- parameter. Operand 0 is the uniform handler function
-					-- type shared by every entry in the table, so the emitter
-					-- can spell the MSL template argument.
+					-- The type of a Metal `visible_function_table<T>`
+					-- parameter or field. The template argument is not an
+					-- operand: the uniform handler signature is fixed by the
+					-- ray-tracing ABI and its struct names are pinned, and
+					-- referencing the globals struct from here would create
+					-- a type cycle (the table appears as a field of that
+					-- struct), so the emitter spells the one canonical
+					-- signature itself.
 					struct_name = "MetalVisibleFunctionTableType",
-					operands = { { "handlerFuncType", "IRFuncType" } },
 					hoistable = true,
 				},
 			},

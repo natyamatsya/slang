@@ -1,8 +1,9 @@
 # Metal Ray-Tracing Pipeline Stages — Implementation Specification
 
-Status: **P0 + P1 + P2 implemented** (all six stages; `TraceRay` and
-`CallShader` from raygen; see §10 for the implementation notes and the
-exact places where the implementation deviates from the text below)
+Status: **P0 + P1 + P2 + P3 implemented** (all six stages; `TraceRay` and
+`CallShader` from raygen *and* from miss/closesthit/callable via the
+`slang_RTGlobals` argument buffer; on-device validation of the recursion
+path pending — see §10 and §11)
 Target: `-target metal` support for the six ray-tracing pipeline stages
 (`raygeneration`, `miss`, `closesthit`, `anyhit`, `intersection`, `callable`).
 
@@ -486,6 +487,48 @@ P1 replaced the P0 traversal and added the intersection-function stages:
   the call.
 - With all six stages supported, the `metal-raytracing-stage-not-supported`
   diagnostic (E56110) was retired.
+
+### P3 implementation notes (dispatch from handler stages, `slang_RTGlobals`)
+
+P3 lands both halves of §5.3 at once, because they are the same mechanism:
+
+- **`slang_RTGlobals` is now a real argument buffer** with a fixed header —
+  `handlers` (the visible function table), `isect` (the intersection
+  function table; encode null when unused), `sbt` (the `slang_RTSbt` fields
+  inline) — followed by one field per globally bound user resource that a
+  miss/closesthit/callable shader references, in global declaration order
+  with pinned names. The kernel keeps its ordinary bindings (and its
+  `buffer(28..30)` system parameters) for the same resources; the
+  application binds each hoisted resource in both places. The `reserved`
+  placeholder field is gone.
+- **Handler-side global access**: helper functions that reference globals
+  are inlined into their entry points, and the references are rewritten to
+  loads from the globals argument buffer. E56113 now covers only
+  module-scope mutable state (anywhere) and global resource access from
+  anyhit/intersection functions (which have no globals parameter until the
+  intersection-table buffer binding lands).
+- **Dispatch from handlers**: `TraceRay` and `CallShader` in
+  miss/closesthit/callable shaders read the table/SBT state from the
+  globals header and use exactly the same lowering as the kernel. E56111
+  is retired — the capability system already keeps these intrinsics out of
+  the stages the execution model cannot support.
+- **Snapshot semantics**: handlers snapshot every context-carried DXR
+  system value at entry (unused snapshots are removed by DCE), because a
+  nested trace reuses the context — including the payload blob — as its
+  dispatch scratch space. The existing payload local-variable sandwich
+  already makes the blob itself nesting-safe: the handler's own payload
+  lives in a local between entry-unpack and return-pack.
+- **Type-cycle note**: the visible-function-table type no longer carries
+  the handler function type as an IR operand (the table is a field of
+  `slang_RTGlobals`, whose pointer appears in the signature — a type
+  cycle); the emitter spells the one canonical signature using the pinned
+  struct names, with forward declarations emitted in the prelude.
+- **On-device status**: the `xcrun metal` compile of recursion inside
+  `[[visible]]` functions passes (including `intersector<>` use and nested
+  table dispatch); runtime validation on-device is the remaining gate of
+  §11 question 1, with the megakernel fallback unchanged if it fails. Set
+  `maxCallStackDepth` on the pipeline descriptor according to the shader's
+  recursion depth.
 
 ## 11. Open questions
 

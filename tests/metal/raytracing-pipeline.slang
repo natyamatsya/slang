@@ -70,8 +70,8 @@ void rayGenMain()
 // packing it back before returning. RayTCurrent() reads the hitT context
 // field, which the miss dispatch filled with the ray's TMax:
 // METAL: {{\[\[}}visible{{\]\]}} void missMain(slang_RTContext{{[^,]*}} thread* slang_rtCtx{{[^,]*}}, slang_RTGlobals{{[^,]*}} device* slang_rtGlobals{{[^)]*}})
-// METAL: (RayPayload{{[^)]*}} thread*)(&slang_rtCtx{{[^)]*}}->payload
 // METAL: ->hitT
+// METAL: (RayPayload{{[^)]*}} thread*)(&slang_rtCtx{{[^)]*}}->payload
 [shader("miss")]
 void missMain(inout RayPayload payload)
 {
