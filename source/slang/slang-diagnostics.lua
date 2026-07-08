@@ -6324,12 +6324,9 @@ err(
     span { loc = "location", message = "the '~stageName' stage is not yet supported for the Metal target; the supported ray-tracing pipeline stages are 'raygeneration', 'miss', 'closesthit', 'anyhit', and 'intersection'." }
 )
 
-err(
-    "metal-raytracing-trace-outside-raygen",
-    56111,
-    "TraceRay or CallShader outside a ray-generation shader is not yet supported for the Metal target",
-    span { loc = "location", message = "on the Metal target, 'TraceRay' and 'CallShader' may only be called from a 'raygeneration' entry point (or functions inlined into it); calling them from other ray-tracing stages is not yet supported." }
-)
+-- 56111 was metal-raytracing-trace-outside-raygen, retired when dispatch
+-- from miss/closest-hit/callable stages became supported (P3); the
+-- capability system keeps TraceRay/CallShader out of the remaining stages.
 
 err(
     "metal-raytracing-payload-too-large",
@@ -6342,7 +6339,7 @@ err(
     "metal-raytracing-global-param-in-handler",
     56113,
     "global state used in a Metal ray-tracing shader stage",
-    span { loc = "location", message = "global shader parameter or mutable global variable '~paramName:IRInst' is referenced from ray-tracing entry point '~entryPointName:IRInst'; on the Metal target, ray-tracing stages other than 'raygeneration' cannot access globally bound resources or module-scope mutable state yet (the 'slang_RTGlobals' aggregation is not implemented)." }
+    span { loc = "location", message = "'~paramName:IRInst' is referenced from ray-tracing entry point '~entryPointName:IRInst'; on the Metal target, ray-tracing stages cannot access module-scope mutable state, and anyhit/intersection functions cannot access globally bound resources yet (only miss/closesthit/callable shaders receive the 'slang_RTGlobals' argument buffer)." }
 )
 
 err(
