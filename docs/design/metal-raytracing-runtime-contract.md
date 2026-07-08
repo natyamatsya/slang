@@ -1,9 +1,11 @@
 # Metal Ray-Tracing Runtime Contract v2 — Separate Compilation and the Globals ABI
 
-Status: **reviewed, revision 2** (co-design spec; companion to `metal-raytracing.md`,
-whose compiler half is implemented through pay-for-use `world_space_data`; revision 2
-resolves the review's blocking finding -- the implicit uniform constant buffer under
-slots mode -- and its text-level items)
+Status: **complete and validated on both sides** (C1/R1, C2/R2, C3/R3 all
+implemented, reviewed, and on-device validated; the mixed-module kit — three
+separate compiles, descriptor-driven host, slot-addressed globals, the C3
+intersection-globals path proven by a sphere whose existence lives entirely in a
+globals slot — passes 4096/4096 exactly. Revision 2 resolved the review's blocking
+finding, the implicit uniform constant buffer under slots mode)
 Scope: the three deliberately-open runtime-contract items — hoisted-globals layout
 pinning, reflection-visible system bindings, anyhit/intersection globals.
 
@@ -129,7 +131,10 @@ declared `register()` number** instead of derived from usage:
 - **Runtime encoding becomes trivial**: slot `k` is filled from the application
   binding at stage `k` (buffer → `gpuAddress`, AS/texture → `gpuResourceID`). The
   per-handler "layout owner" concept and the single-resource-using-handler
-  restriction disappear.
+  restriction disappear. One obligation replaces them, learned on device: **every
+  slot that any linked handler dereferences must be filled** — a placeholder in
+  one module's struct text may be a typed, read field in another's, and an empty
+  slot read through that view is a GPU fault, not an error.
 - Resources without an explicit `register()` are a compile-time error under slots
   mode (the register *is* the slot address; the consuming convention already
   requires it). Likewise diagnosed: **duplicate slot addresses** (`t2` and `u2`
@@ -193,9 +198,11 @@ stage compile:
 
 ## 6. Work plan
 
-Implementation status: **C1, C2, and C3 are implemented on `metal-rt-impl`**
-(the descriptor line, `-metal-rt-globals-slots`, and the intersection-table
-globals path — E56113 is narrowed to module-scope mutable state). One
+Implementation status: **complete** — C1/C2/C3 on `metal-rt-impl`, R1/R2/R3 in
+the consuming runtime, every phase on-device validated, including the
+first production-shape run of `-metal-rt-force-isect-table` (a raygen-only
+module gaining `buffer(27)` and `isect:1` in agreement with a separately
+compiled intersection module). One
 consuming-side note from C2: Slang's pre-existing warning 39029 (D3D
 register without a Vulkan binding) fires on `register()` declarations in
 Metal-only compiles — stage compiles should pass `-warnings-disable 39029`.
