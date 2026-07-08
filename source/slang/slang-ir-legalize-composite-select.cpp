@@ -18,6 +18,11 @@ void legalizeCompositeSelect(IRBuilder& builder, IRSelect* selectInst)
     auto trueResult = selectInst->getTrueResult();
     auto falseResult = selectInst->getFalseResult();
 
+    // The if/else replaces the select at its own position; without this the
+    // builder has no insertion point and emitIfElseWithBlocks dereferences
+    // a null block.
+    builder.setInsertBefore(selectInst);
+
     IRBlock* trueBlock;
     IRBlock* falseBlock;
     IRBlock* afterBlock;
@@ -40,7 +45,7 @@ void legalizeCompositeSelect(IRBuilder& builder, IRSelect* selectInst)
         nextInst = nextInst->getNextInst();
     }
     for (auto i : instsToMove)
-        afterBlock->insertAtEnd(i);
+        i->insertAtEnd(afterBlock);
 
     // Merge result of branches into param
     builder.setInsertInto(afterBlock);
