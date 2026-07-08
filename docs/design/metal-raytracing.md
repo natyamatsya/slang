@@ -1,8 +1,8 @@
 # Metal Ray-Tracing Pipeline Stages — Implementation Specification
 
-Status: **P0 implemented** (raygen + miss + closesthit, triangle geometry,
-`TraceRay` from raygen; see §10 for the implementation notes and the exact
-places where the implementation deviates from the text below)
+Status: **P0 + P1 implemented** (raygen + miss + closesthit + anyhit +
+intersection, `TraceRay` from raygen; see §10 for the implementation notes
+and the exact places where the implementation deviates from the text below)
 Target: `-target metal` support for the six ray-tracing pipeline stages
 (`raygeneration`, `miss`, `closesthit`, `anyhit`, `intersection`, `callable`).
 
@@ -411,6 +411,60 @@ Deviations from the text above — the runtime-visible ones first:
    a user resource laid out or explicitly bound at `buffer(28)` or above
    in a program with a raygeneration entry point is rejected (E56116)
    rather than silently double-bound against the system parameters.
+
+### P1 implementation notes (anyhit + intersection)
+
+P1 replaced the P0 traversal and added the intersection-function stages:
+
+- **Unified `intersector<>` traversal** (supersedes deviation 5 above): every
+  `TraceRay` now lowers through one transient IR op whose traversal half is
+  the `_slang_rtTrace` prelude template (`slang-emit-metal-prelude.cpp`): it
+  configures an `intersector<triangle_data, instancing>` from the DXR ray
+  flags, runs `intersect()` — with the `slang_rtIsect` intersection function
+  table when the program links anyhit/intersection stages, without it
+  otherwise — and fills the committed-hit context fields. The SBT dispatch
+  half stays in IR (`slang-ir-metal-legalize-raytracing.cpp`).
+- **`slang_rtIsect` at `[[buffer(27)]]`**, bound only when anyhit or
+  intersection entry points are present *in the same compiled module* as the
+  ray-generation kernel. A raygen module compiled separately from its
+  intersection stages would not receive the table binding — compile the
+  stages together until a forcing option exists. The reserved-binding
+  collision guard's floor moves to 27 accordingly.
+- **Anyhit** becomes `[[intersection(triangle, ...)]] bool f(...)` with the
+  candidate state as tagged parameters (`[[distance]]`,
+  `[[barycentric_coord]]`, `[[front_facing]]`, ids) and the context as the
+  `ray_data ... & [[payload]]` reference. Falling off the end accepts;
+  `IgnoreHit()` returns false; `AcceptHitAndEndSearch()` accepts (the search
+  actually ends only when the ray carries
+  `RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH`, per §4.5). The payload is
+  accessed directly through a typed view of the context blob so writes
+  persist for ignored hits, as DXR requires. `HitKind()` derives from
+  `[[front_facing]]`.
+- **Intersection** becomes `[[intersection(bounding_box, ...)]]` returning
+  `slang_RTBBoxResult { bool accept [[accept_intersection]]; float distance
+  [[distance]]; }`. `ReportHit(t, kind, attrs)` is range-guarded: when `t`
+  lies inside `[[min_distance]], [[max_distance]]`, the attributes are
+  stored into the context's 32-byte attribute blob, the hit kind into the
+  context, and the function returns the accepting result — code after an
+  in-range `ReportHit` therefore does not run (single-report semantics; DXR
+  shaders that keep reporting after an accepted hit are not expressible on
+  Metal's return-once protocol). An out-of-range `ReportHit` yields `false`
+  and execution continues. Writing only in-range reports keeps the blob
+  consistent: Metal commits every accepted in-range hit, so the last write
+  is always the final committed hit. Hit groups combining an intersection
+  shader *and* an anyhit shader are not supported (Metal has no anyhit
+  chaining after a bounding-box report; fuse the logic into the
+  intersection shader).
+- **Closest-hit attribute rule**: the built-in single-`float2` triangle
+  attribute struct reads the committed barycentrics field; any other
+  attribute struct reads the attribute blob (E56114 if the attribute type
+  is not a struct, E56117 if it exceeds 32 bytes).
+- **Pinned ABI names**: `slang_RTContext` / `slang_RTGlobals` / `slang_RTSbt`
+  / `slang_RTBBoxResult` and all their field names emit without uniqueness
+  suffixes, so separately compiled stage libraries produce byte-identical
+  struct declarations (and the prelude template can address context fields
+  by name).
+- E56110 now rejects only `callable` (phase P2).
 
 ## 11. Open questions
 
