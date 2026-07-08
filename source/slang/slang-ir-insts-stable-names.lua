@@ -896,7 +896,11 @@ return {
 	["metalRTGeometryIndex"] = 920,
 	["metalRTPrimitiveIndex"] = 921,
 	["metalRTHitKind"] = 922,
-	["metalRTCallMissHandler"] = 923,
-	["metalRTCallHitHandler"] = 924,
-	["metalRTHandlerCall"] = 925
+	["metalRTTraceRay"] = 923,
+	["metalRTReportHit"] = 924,
+	["metalRTHandlerCall"] = 925,
+	["metalRTIgnoreHit"] = 926,
+	["metalRTAcceptHitAndEndSearch"] = 927,
+	["metalRTIntersect"] = 928,
+	["Type.MetalIntersectionFunctionTable"] = 929
 }

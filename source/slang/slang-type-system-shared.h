@@ -167,6 +167,10 @@ enum class AddressSpace : uint64_t
     SpecializationConstant,
     // Corresponds to SPIR-V's SpvStorageClassNodePayloadAMDX,
     NodePayloadAMDX,
+    // Metal's `ray_data` address space: the payload of an
+    // `intersector<>::intersect()` call as seen from inside an
+    // `[[intersection(...)]]` function.
+    MetalRayData,
 
     // Default address space for a user-defined pointer
     UserPointer = 0x100000001ULL,
