@@ -530,6 +530,16 @@ P3 lands both halves of §5.3 at once, because they are the same mechanism:
   `maxCallStackDepth` on the pipeline descriptor according to the shader's
   recursion depth.
 
+### Separately compiled stages: `-metal-rt-force-isect-table`
+
+A ray-generation module compiled without its anyhit/intersection stages can
+opt into the `slang_rtIsect` binding (and the table-taking traversal) with
+`-metal-rt-force-isect-table`. The remaining per-module behavior — the
+hoisted-user-resource tail of `slang_RTGlobals` — still depends on which
+globals the handler stages reference; a layout-pinning mechanism for fully
+separate compilation is an open design item and should be settled together
+with this option's usage in stage-per-envelope build systems.
+
 ### P4 implementation notes (completeness)
 
 - **Full traversal flag mapping**: `_slang_rtTraceConfigure` now also maps
@@ -554,9 +564,12 @@ P3 lands both halves of §5.3 at once, because they are the same mechanism:
 
 ## 11. Open questions
 
-1. `intersector<>` inside `[[visible]]` functions (P3): believed legal (they
-   are ordinary AIR functions), needs an on-device proof before committing to
-   recursion; megakernel fallback specified.
+1. ~~`intersector<>` inside `[[visible]]` functions (P3)~~ **Answered on
+   device** (Apple M2 Max): traversal and nested table dispatch inside
+   visible functions work; TraceRay-from-closesthit at depth 2 validated
+   with exact values, including entry-snapshot survival of the context
+   being reused by the nested trace. The megakernel fallback is no longer
+   needed.
 2. Payload blob size: fixed max (this spec) vs. per-payload-type table
    specialization (rejected for now: breaks single-table SBT semantics and
    explodes pipeline variants).

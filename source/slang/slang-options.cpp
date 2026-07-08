@@ -898,6 +898,12 @@ void initCommandOptions(CommandOptions& options)
          "-fvk-use-gl-layout",
          nullptr,
          "Use std430 layout instead of D3D buffer layout for raw buffer load/stores."},
+        {OptionKind::MetalRTForceIsectTable,
+         "-metal-rt-force-isect-table",
+         nullptr,
+         "For the Metal ray-tracing pipeline: always bind the slang_rtIsect intersection "
+         "function table on ray-generation kernels, even when no anyhit/intersection entry "
+         "points are compiled in the same module (for separately compiled stages)."},
         {OptionKind::VulkanEmitReflection,
          "-fspv-reflect",
          nullptr,
@@ -2802,6 +2808,7 @@ SlangResult OptionsParser::_parse(int argc, char const* const* argv)
         case OptionKind::VulkanUseDxPositionW:
         case OptionKind::VulkanUseEntryPointName:
         case OptionKind::VulkanUseGLLayout:
+        case OptionKind::MetalRTForceIsectTable:
         case OptionKind::VulkanEmitReflection:
         case OptionKind::IgnoreCapabilities:
         case OptionKind::RestrictiveCapabilityCheck:

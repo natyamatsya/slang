@@ -1307,6 +1307,13 @@ typedef uint32_t SlangSizeT;
                  //   debug information: using it with `-g0`, or without any `-g` option (both
                  //   resolve to no debug info), is an error. Only affects SPIR-V output.
 
+        // Force the Metal ray-tracing kernel to receive the `slang_rtIsect`
+        // intersection function table binding even when no anyhit or
+        // intersection entry points are compiled in the same module, so
+        // separately compiled ray-generation modules can link against
+        // pipelines that use intersection functions. CLI: -metal-rt-force-isect-table.
+        MetalRTForceIsectTable = 158,
+
         // Do not assign an explicit value to CountOf. It must remain one past the last option,
         // which it derives implicitly from the preceding (highest-valued) enumerator.
         CountOf,
