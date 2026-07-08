@@ -1,9 +1,9 @@
 //DIAGNOSTIC_TEST:SIMPLE(filecheck=CHECK): -target metal
 
-// The P0 scope of docs/design/metal-raytracing.md supports raygeneration,
-// miss, and closesthit only. Later phases (callable shaders, TraceRay
-// recursion from a closest-hit shader, global resource access from handler
-// stages via slang_RTGlobals) must fail loudly until implemented.
+// Features beyond the implemented phases of docs/design/metal-raytracing.md
+// (TraceRay/CallShader outside raygeneration, global resource access from
+// handler stages via slang_RTGlobals, out-of-contract attribute types) must
+// fail loudly until implemented.
 
 uniform RaytracingAccelerationStructure scene;
 StructuredBuffer<float4> missColors;
@@ -17,14 +17,6 @@ struct CallableData
 {
     float4 value;
 };
-
-// Callable shaders arrive in phase P2:
-//CHECK-DAG: 56110
-[shader("callable")]
-void callableMain(inout CallableData data)
-{
-    data.value = float4(1, 2, 3, 4);
-}
 
 // Global resource access from a handler stage needs the slang_RTGlobals
 // hoisting of section 4.3, which is not implemented yet:
@@ -49,6 +41,18 @@ float4 fetchMissColor()
 void missTransitive(inout RayPayload payload)
 {
     payload.color = fetchMissColor();
+}
+
+// CallShader from a handler stage needs the same table threading as
+// TraceRay recursion (phase P3):
+//CHECK-DAG: 56111
+[shader("miss")]
+void missCallShader(inout RayPayload payload)
+{
+    CallableData data;
+    data.value = payload.color;
+    CallShader(0, data);
+    payload.color = data.value;
 }
 
 // Intersection attributes must be a struct (the built-in triangle shape or

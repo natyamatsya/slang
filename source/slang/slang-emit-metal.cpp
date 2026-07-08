@@ -270,10 +270,6 @@ void MetalSourceEmitter::emitEntryPointAttributesImpl(
         break;
     case Stage::Miss:
     case Stage::ClosestHit:
-    // Callable is forward-looking: callable shaders share the visible-
-    // function lowering but are still rejected by legalizeMetalRayTracing
-    // (E56110) until phase P2 of the design doc lands, so this case is not
-    // reachable yet.
     case Stage::Callable:
         m_writer->emit("[[visible]] ");
         break;

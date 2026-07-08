@@ -1736,6 +1736,16 @@ local insts = {
 	-- DXR `IgnoreHit()` / `AcceptHitAndEndSearch()` in an anyhit shader.
 	{ metalRTIgnoreHit = {} },
 	{ metalRTAcceptHitAndEndSearch = {} },
+	-- DXR `CallShader(shaderIndex, payload)`: dispatch of a callable shader
+	-- through the visible function table.
+	{
+		metalRTCallShader = {
+			operands = {
+				{ "shaderIndex" },
+				{ "payloadPtr" },
+			},
+		},
+	},
 	-- Run the traversal half of one `TraceRay`: the emitter prints a call to
 	-- the `_slang_rtTrace` prelude helper, which drives
 	-- `intersector<>::intersect()` and fills the committed-hit fields of the

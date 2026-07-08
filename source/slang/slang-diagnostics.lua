@@ -5790,18 +5790,14 @@ err(
     span { loc = "location", message = "SubpassInput cannot be placed inside a ParameterBlock on Metal; framebuffer fetch inputs must be direct entry-point parameters." }
 )
 
-err(
-    "metal-raytracing-stage-not-supported",
-    56110,
-    "ray-tracing stage not yet supported for the Metal target",
-    span { loc = "location", message = "the '~stageName' stage is not yet supported for the Metal target; the supported ray-tracing pipeline stages are 'raygeneration', 'miss', 'closesthit', 'anyhit', and 'intersection'." }
-)
+-- 56110 was metal-raytracing-stage-not-supported, retired when all six
+-- ray-tracing stages became supported (P2).
 
 err(
     "metal-raytracing-trace-outside-raygen",
     56111,
-    "TraceRay outside a ray-generation shader is not yet supported for the Metal target",
-    span { loc = "location", message = "on the Metal target, 'TraceRay' may only be called from a 'raygeneration' entry point (or functions inlined into it); calling it from other ray-tracing stages is not yet supported." }
+    "TraceRay or CallShader outside a ray-generation shader is not yet supported for the Metal target",
+    span { loc = "location", message = "on the Metal target, 'TraceRay' and 'CallShader' may only be called from a 'raygeneration' entry point (or functions inlined into it); calling them from other ray-tracing stages is not yet supported." }
 )
 
 err(
