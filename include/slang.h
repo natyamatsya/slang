@@ -1384,7 +1384,17 @@ typedef uint32_t SlangSizeT;
         // entry point in the module uses the corresponding intrinsics, so
         // separately compiled modules agree on the context layout and the
         // intersection tag sets. CLI: -metal-rt-force-world-space-data.
+
         MetalRTForceWorldSpaceData = 166,
+
+        // Slot count for the slot-addressed Metal ray-tracing globals
+        // layout: the tail of slang_RTGlobals becomes exactly N 8-byte
+        // slots addressed by declared register() number, so separately
+        // compiled modules agree on the layout by construction. 0 (the
+        // default) keeps the usage-derived layout. Part of the cross-stage
+        // ABI: every module linked into one pipeline must use the same
+        // value. CLI: -metal-rt-globals-slots <N>.
+        MetalRTGlobalsSlots = 167,
         // Do not assign an explicit value to CountOf. It must remain one past the last option,
         // which it derives implicitly from the preceding (highest-valued) enumerator.
         CountOf,

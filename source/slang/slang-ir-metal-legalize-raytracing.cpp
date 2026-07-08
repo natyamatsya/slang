@@ -158,6 +158,19 @@ struct MetalRayTracingLegalizationContext
     IRStructKey* globalsSbtKey = nullptr;
     Dictionary<IRInst*, IRStructKey*> hoistedGlobalFields;
 
+    // Slot-addressed globals layout (runtime-contract spec section 3): when
+    // nonzero, the tail of `slang_RTGlobals` is exactly `globalsSlots`
+    // 8-byte slots addressed by declared register() number, and the fixed
+    // header gains the `uniforms` entry for the implicit constant buffer.
+    // Cross-stage ABI: every module of one pipeline must agree.
+    Int globalsSlots = 0;
+    IRStructKey* globalsUniformsKey = nullptr;
+
+    // Globals that already received a slot-assignment diagnostic: the later
+    // global-state check skips them so one root cause reports one error,
+    // not a misleading E56113 cascade on top.
+    HashSet<IRInst*> slotDiagnosedParams;
+
     // Per-entry-point access paths to the ABI values: the context pointer is
     // a local variable in a ray-generation kernel, the first parameter of a
     // miss/closest-hit/callable handler, and the `[[payload]]` parameter of
@@ -307,6 +320,31 @@ static void inlineMetalRTOpsIntoEntryPoints(IRModule* module)
         if (!changed)
             return;
     }
+}
+
+/// Find the implicit global constant buffer that the front end aggregates
+/// "loose" global uniforms into (e.g. `uniform float4 u_params[4];`),
+/// identified by the `GlobalParams` name hint on its element struct — the
+/// one name-based coupling to the front end's aggregation, spelled only
+/// here. Returns null when the module declares no loose uniforms. Both the
+/// ABI descriptor (`uniforms` presence/size, section 2 of the runtime
+/// contract) and the slots-mode `uniforms` header entry (section 3) key off
+/// this identity.
+static IRGlobalParam* findImplicitGlobalParamsBuffer(IRModule* module)
+{
+    for (auto inst : module->getGlobalInsts())
+    {
+        auto globalParam = as<IRGlobalParam>(inst);
+        if (!globalParam)
+            continue;
+        auto groupType = as<IRUniformParameterGroupType>(globalParam->getDataType());
+        if (!groupType)
+            continue;
+        auto nameHint = groupType->getElementType()->findDecoration<IRNameHintDecoration>();
+        if (nameHint && nameHint->getName() == kMetalRTImplicitUniformsStructName)
+            return globalParam;
+    }
+    return nullptr;
 }
 
 /// The `float4x3` type used for the Metal instance transforms (Metal
@@ -471,6 +509,20 @@ static void ensureSharedTypes(MetalRayTracingLegalizationContext& context)
     context.globalsHandlersKey = addField(globalsType, "handlers", context.visibleTableType);
     context.globalsIsectKey = addField(globalsType, "isect", context.isectTableType);
     context.globalsSbtKey = addField(globalsType, "sbt", sbtType);
+    if (context.globalsSlots > 0)
+    {
+        // Under the slot-addressed layout the fixed header always ends with
+        // the implicit-constant-buffer pointer (runtime-contract spec
+        // section 3): loose uniforms cannot carry a register(), so they get
+        // a header entry instead of a slot. When the module declares no
+        // loose uniforms the 8 bytes are kept as an opaque placeholder so
+        // the layout still agrees by construction; the runtime encodes the
+        // dispatch's uniform-scratch address, or 0.
+        IRType* uniformsFieldType = builder.getUInt64Type();
+        if (auto globalParams = findImplicitGlobalParamsBuffer(context.module))
+            uniformsFieldType = globalParams->getFullType();
+        context.globalsUniformsKey = addField(globalsType, "uniforms", uniformsFieldType);
+    }
 }
 
 /// Return the Metal attribute string `buffer(<index>)`.
@@ -742,12 +794,53 @@ static void replaceAttributeParam(IRBuilder& builder, IRParam* param, IRInst* at
 }
 
 /// Create one `slang_RTGlobals` field per globally bound shader parameter
-/// that a miss/closest-hit/callable entry point references, in global
-/// declaration order. The order is part of the argument-buffer ABI: the
-/// runtime encodes the hoisted user resources after the fixed dispatch-state
-/// header (handlers, isect, sbt) in exactly this order. The kernel keeps its
-/// ordinary bindings for the same resources; the application binds each
-/// hoisted resource in both places.
+/// that a miss/closest-hit/callable entry point references. The tail layout
+/// after the fixed dispatch-state header is one of two modes (runtime
+/// contract, section 3): usage-derived — one typed field per referenced
+/// resource, in global declaration order — or, under
+/// `-metal-rt-globals-slots N`, slot-addressed — exactly N 8-byte slots
+/// addressed by declared register() number, typed where referenced and
+/// opaque placeholders elsewhere, with the implicit constant buffer in the
+/// header's `uniforms` entry. The kernel keeps its ordinary bindings for
+/// the same resources; the application binds each hoisted resource in both
+/// places.
+/// Create a struct key whose emitted field name is pinned to `name` (via the
+/// ExternCpp decoration), so separately compiled stage libraries agree on
+/// the emitted `slang_RTGlobals` text and the runtime can identify fields.
+static IRStructKey* createPinnedStructKey(IRBuilder& builder, UnownedStringSlice name)
+{
+    auto key = builder.createStructKey();
+    builder.addNameHintDecoration(key, name);
+    builder.addExternCppDecoration(key, name);
+    return key;
+}
+
+/// Return the Metal binding index (and space) that layout assigned to
+/// `globalParam` — the buffer or texture index, whichever kind the resource
+/// occupies. Declared `register()` numbers arrive here unchanged, which is
+/// what makes the index usable as a slot address (runtime-contract spec
+/// section 3). Returns -1 when the resource occupies neither index space
+/// (e.g. a sampler).
+static Int findMetalBindingIndex(IRGlobalParam* globalParam, UInt* outSpace)
+{
+    *outSpace = 0;
+    if (auto layoutDecor = globalParam->findDecoration<IRLayoutDecoration>())
+    {
+        if (auto varLayout = as<IRVarLayout>(layoutDecor->getLayout()))
+        {
+            for (auto kind : {LayoutResourceKind::MetalBuffer, LayoutResourceKind::MetalTexture})
+            {
+                if (auto offsetAttr = varLayout->findOffsetAttr(kind))
+                {
+                    *outSpace = offsetAttr->getSpace();
+                    return (Int)offsetAttr->getOffset();
+                }
+            }
+        }
+    }
+    return -1;
+}
+
 static void hoistHandlerGlobals(
     MetalRayTracingLegalizationContext& context,
     List<EntryPointInfo>& handlerEntryPoints)
@@ -761,27 +854,135 @@ static void hoistHandlerGlobals(
                     if (auto globalParam = as<IRGlobalParam>(inst->getOperand(i)))
                         usedGlobals.add(globalParam);
     }
-    if (usedGlobals.getCount() == 0)
+    // Under the slot-addressed layout the struct must carry all N slots even
+    // when this module's handlers reference nothing (agreement is by
+    // construction, not by use).
+    if (usedGlobals.getCount() == 0 && context.globalsSlots == 0)
         return;
 
     ensureSharedTypes(context);
     IRBuilder builder(context.module);
+    auto implicitUniforms = findImplicitGlobalParamsBuffer(context.module);
+
+    if (context.globalsSlots == 0)
+    {
+        // Usage-derived layout: one typed field per referenced global, in
+        // global declaration order.
+        for (auto inst : context.module->getGlobalInsts())
+        {
+            auto globalParam = as<IRGlobalParam>(inst);
+            if (!globalParam || !usedGlobals.contains(globalParam))
+                continue;
+            auto nameHint = globalParam->findDecoration<IRNameHintDecoration>();
+            auto key = createPinnedStructKey(
+                builder,
+                nameHint ? nameHint->getName() : UnownedStringSlice());
+            builder.createStructField(context.globalsStructType, key, globalParam->getFullType());
+            context.hoistedGlobalFields[globalParam] = key;
+        }
+        return;
+    }
+
+    // Slot-addressed layout (runtime-contract spec section 3): slot k
+    // belongs to the resource declared at register k ('t' and 'u' registers
+    // share the one index space, as the Metal layout already maps them to
+    // one buffer index space). Every referenced resource must carry an
+    // explicit register in the default space, inside the slot range, and
+    // own its slot alone -- each violation is diagnosed, because a wrong
+    // address here is a silent cross-module ABI break at runtime.
+    Dictionary<Int, IRGlobalParam*> slotOwners;
     for (auto inst : context.module->getGlobalInsts())
     {
         auto globalParam = as<IRGlobalParam>(inst);
         if (!globalParam || !usedGlobals.contains(globalParam))
             continue;
-        auto key = builder.createStructKey();
-        if (auto nameHint = globalParam->findDecoration<IRNameHintDecoration>())
+        if (globalParam == implicitUniforms)
         {
-            // Pin the field name to the user's parameter name, so separately
-            // compiled stage libraries agree on the emitted struct and the
-            // runtime can identify the field.
-            builder.addNameHintDecoration(key, nameHint->getName());
-            builder.addExternCppDecoration(key, nameHint->getName());
+            // Loose uniforms live in the fixed header's `uniforms` entry.
+            context.hoistedGlobalFields[globalParam] = context.globalsUniformsKey;
+            continue;
         }
-        builder.createStructField(context.globalsStructType, key, globalParam->getFullType());
-        context.hoistedGlobalFields[globalParam] = key;
+        if (!globalParam->findDecoration<IRHasExplicitHLSLBindingDecoration>())
+        {
+            context.slotDiagnosedParams.add(globalParam);
+            context.sink->diagnose(Diagnostics::MetalRaytracingSlotsMissingRegister{
+                .paramName = globalParam,
+                .location = getDiagnosticPos(globalParam),
+            });
+            continue;
+        }
+        UInt slotSpace = 0;
+        Int slotIndex = findMetalBindingIndex(globalParam, &slotSpace);
+        if (slotIndex < 0)
+        {
+            // The resource occupies neither Metal index space that has an
+            // 8-byte argument-buffer encoding — a sampler, in v1.
+            context.slotDiagnosedParams.add(globalParam);
+            context.sink->diagnose(Diagnostics::MetalRaytracingSlotsNotAddressable{
+                .paramName = globalParam,
+                .location = getDiagnosticPos(globalParam),
+            });
+            continue;
+        }
+        if (slotSpace != 0)
+        {
+            context.slotDiagnosedParams.add(globalParam);
+            context.sink->diagnose(Diagnostics::MetalRaytracingSlotsRegisterSpace{
+                .paramName = globalParam,
+                .location = getDiagnosticPos(globalParam),
+            });
+            continue;
+        }
+        if (slotIndex >= context.globalsSlots)
+        {
+            context.slotDiagnosedParams.add(globalParam);
+            context.sink->diagnose(Diagnostics::MetalRaytracingSlotsOutOfRange{
+                .paramName = globalParam,
+                .slotIndex = String(slotIndex),
+                .slotCount = String(context.globalsSlots),
+                .location = getDiagnosticPos(globalParam),
+            });
+            continue;
+        }
+        if (IRGlobalParam* owner = nullptr; slotOwners.tryGetValue(slotIndex, owner))
+        {
+            context.slotDiagnosedParams.add(globalParam);
+            context.sink->diagnose(Diagnostics::MetalRaytracingSlotsDuplicate{
+                .paramName = globalParam,
+                .otherParamName = owner,
+                .slotIndex = String(slotIndex),
+                .location = getDiagnosticPos(globalParam),
+            });
+            continue;
+        }
+        slotOwners[slotIndex] = globalParam;
+    }
+
+    for (Int slot = 0; slot < context.globalsSlots; slot++)
+    {
+        IRGlobalParam* owner = nullptr;
+        slotOwners.tryGetValue(slot, owner);
+        if (owner)
+        {
+            auto nameHint = owner->findDecoration<IRNameHintDecoration>();
+            auto key = createPinnedStructKey(
+                builder,
+                nameHint ? nameHint->getName() : UnownedStringSlice());
+            builder.createStructField(context.globalsStructType, key, owner->getFullType());
+            context.hoistedGlobalFields[owner] = key;
+        }
+        else
+        {
+            // An opaque 8-byte placeholder: this module does not view the
+            // slot, but the layout must still agree by construction.
+            StringBuilder slotName;
+            slotName << "slang_rtSlot" << slot;
+            auto key = createPinnedStructKey(builder, slotName.getUnownedSlice());
+            builder.createStructField(
+                context.globalsStructType,
+                key,
+                builder.getUInt64Type());
+        }
     }
 }
 
@@ -1259,7 +1460,10 @@ static void checkForGlobalStateInHandler(
                 {
                     auto operand = inst->getOperand(j);
                     bool isGlobalState = as<IRGlobalParam>(operand) || as<IRGlobalVar>(operand);
-                    if (isGlobalState && diagnosed.add(operand))
+                    // One root cause, one error: a global that already
+                    // failed slot assignment was diagnosed there.
+                    if (isGlobalState && !context.slotDiagnosedParams.contains(operand) &&
+                        diagnosed.add(operand))
                     {
                         context.sink->diagnose(Diagnostics::MetalRaytracingGlobalParamInHandler{
                             .paramName = operand,
@@ -1757,30 +1961,6 @@ static bool anyEntryPointUsesWorldSpaceData(List<EntryPointInfo>& entryPoints)
     return false;
 }
 
-/// Find the implicit global constant buffer that the front end aggregates
-/// "loose" global uniforms into (e.g. `uniform float4 u_params[4];`),
-/// identified by the `GlobalParams` name hint on its element struct — the
-/// one name-based coupling to the front end's aggregation, spelled only
-/// here. Returns null when the module declares no loose uniforms. Both the
-/// ABI descriptor (`uniforms` presence/size, section 2 of the runtime
-/// contract) and the slots-mode `uniforms` header entry (section 3) key off
-/// this identity.
-static IRGlobalParam* findImplicitGlobalParamsBuffer(IRModule* module)
-{
-    for (auto inst : module->getGlobalInsts())
-    {
-        auto globalParam = as<IRGlobalParam>(inst);
-        if (!globalParam)
-            continue;
-        auto groupType = as<IRUniformParameterGroupType>(globalParam->getDataType());
-        if (!groupType)
-            continue;
-        auto nameHint = groupType->getElementType()->findDecoration<IRNameHintDecoration>();
-        if (nameHint && nameHint->getName() == kMetalRTImplicitUniformsStructName)
-            return globalParam;
-    }
-    return nullptr;
-}
 
 /// Record the module's cross-module ABI decisions as the machine-readable
 /// descriptor of the runtime-contract spec (section 2): one JSON line that
@@ -1807,15 +1987,8 @@ static void attachAbiDescriptor(
                 (IRType*)elementType,
                 &sizeAndAlignment)))
             uniformsSize = sizeAndAlignment.size;
-        if (auto layoutDecor = globalParams->findDecoration<IRLayoutDecoration>())
-        {
-            if (auto varLayout = as<IRVarLayout>(layoutDecor->getLayout()))
-            {
-                if (auto offsetAttr =
-                        varLayout->findOffsetAttr(LayoutResourceKind::MetalBuffer))
-                    uniformsBufferIndex = (Int)offsetAttr->getOffset();
-            }
-        }
+        UInt space = 0;
+        uniformsBufferIndex = findMetalBindingIndex(globalParams, &space);
     }
 
     StringBuilder json;
@@ -1824,9 +1997,7 @@ static void attachAbiDescriptor(
     json << ",\"attr\":" << kMetalRTMaxAttributeSize;
     json << ",\"ws\":" << (context.usesWorldSpaceData ? 1 : 0);
     json << ",\"isect\":" << (context.hasIntersectionStages ? 1 : 0);
-    // Slot-addressed globals layout arrives with the spec's C2 phase; 0 is
-    // the usage-derived layout of the base design.
-    json << ",\"slots\":0";
+    json << ",\"slots\":" << context.globalsSlots;
     if (hasRayGenerationEntryPoint)
     {
         json << ",\"sys\":{\"handlers\":" << kMetalRTHandlersBufferIndex
@@ -1870,6 +2041,8 @@ void legalizeMetalRayTracing(
     if (auto optionSize = targetProgram->getOptionSet().getIntOption(
             CompilerOptionName::MetalRTMaxPayloadSize))
         context.maxPayloadSize = optionSize;
+    context.globalsSlots =
+        targetProgram->getOptionSet().getIntOption(CompilerOptionName::MetalRTGlobalsSlots);
 
     // Partition the ray-tracing entry points by stage, diagnosing the stages
     // that later phases of docs/design/metal-raytracing.md will add.
