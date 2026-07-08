@@ -19713,44 +19713,43 @@ __generic<Payload>
 __intrinsic_op($(kIROp_GetVulkanRayTracingPayloadLocation))
 int __rayPayloadLocation(__ref Payload payload);
 
-// Metal ray-tracing pipeline handler dispatch.
+// Metal ray-tracing pipeline intrinsics.
 //
-// These intrinsics carry the software-SBT half of a Metal `TraceRay` into the
+// These carry a Metal `TraceRay` and the DXR hit-control functions into the
 // IR so that `legalizeMetalRayTracing` (slang-ir-metal-legalize-raytracing.cpp)
-// can rewrite them: it fills the per-thread `slang_RTContext` with the ray and
-// hit state given by the operands, packs the payload into the context's
-// payload blob, computes the shader-binding-table record index, calls the
-// selected entry of the `slang_rtHandlers` visible function table, and unpacks
-// the payload blob back. See docs/design/metal-raytracing.md, section 5.
+// can rewrite them. `__metalRTTraceRay` expands into: filling the per-thread
+// `slang_RTContext` with the ray state, packing the payload into the
+// context's payload blob, running traversal via `intersector<>::intersect()`
+// (invoking any linked anyhit/intersection functions), computing the
+// shader-binding-table record index of the closest-hit or miss shader, and
+// calling it through the `slang_rtHandlers` visible function table. The
+// `__metalRTReportHit` / `__metalRTIgnoreHit` / `__metalRTAcceptHitAndEndSearch`
+// intrinsics become the accept/reject protocol of Metal intersection
+// functions. See docs/design/metal-raytracing.md, sections 4.5 and 5.
 __generic<payload_t>
-__intrinsic_op($(kIROp_MetalRTCallMissHandler))
-void __metalRTCallMissHandler(
+__intrinsic_op($(kIROp_MetalRTTraceRay))
+void __metalRTTraceRay(
+    RaytracingAccelerationStructure accelerationStructure,
+    uint rayFlags,
+    uint instanceInclusionMask,
+    uint rayContributionToHitGroupIndex,
+    uint multiplierForGeometryContributionToHitGroupIndex,
     uint missShaderIndex,
     float3 origin,
     float tMin,
     float3 direction,
     float tMax,
-    uint rayFlags,
     inout payload_t payload);
 
-__generic<payload_t>
-__intrinsic_op($(kIROp_MetalRTCallHitHandler))
-void __metalRTCallHitHandler(
-    uint rayContributionToHitGroupIndex,
-    uint multiplierForGeometryContributionToHitGroupIndex,
-    uint instanceIndex,
-    uint instanceID,
-    uint geometryIndex,
-    uint primitiveIndex,
-    float hitT,
-    float2 barycentrics,
-    bool isFrontFace,
-    float3 origin,
-    float tMin,
-    float3 direction,
-    float tMax,
-    uint rayFlags,
-    inout payload_t payload);
+__generic<attr_t>
+__intrinsic_op($(kIROp_MetalRTReportHit))
+bool __metalRTReportHit(float tHit, uint hitKind, attr_t attributes);
+
+__intrinsic_op($(kIROp_MetalRTIgnoreHit))
+void __metalRTIgnoreHit();
+
+__intrinsic_op($(kIROp_MetalRTAcceptHitAndEndSearch))
+void __metalRTAcceptHitAndEndSearch();
 
 /// Traces a ray through the acceleration structure.
 /// @param AccelerationStructure The acceleration structure to traverse
@@ -19839,54 +19838,25 @@ void TraceRay(
     }
     case metal:
     {
-        // Metal has no driver-level ray-tracing pipeline, so the traversal
-        // half of `TraceRay` reuses the already-lowered inline path: an
-        // `intersection_query` traced with the caller's dynamic flags. With
-        // only triangle geometry and no anyhit shaders linked (the P0 scope
-        // of docs/design/metal-raytracing.md), committing every non-opaque
-        // triangle candidate is exactly DXR's default-accept anyhit
-        // semantics. The dispatch half — filling `slang_RTContext`,
-        // computing the shader-binding-table record index, and calling the
-        // miss or hit shader through the `slang_rtHandlers` visible function
-        // table — is carried by the `__metalRTCall*Handler` intrinsics and
-        // expanded in `legalizeMetalRayTracing`.
-        RayQuery<RAY_FLAG_NONE> q;
-        q.TraceRayInline(AccelerationStructure, RayFlags, InstanceInclusionMask, Ray);
-        while (q.Proceed())
-        {
-            if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
-                q.CommitNonOpaqueTriangleHit();
-        }
-        if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
-        {
-            __metalRTCallHitHandler(
-                RayContributionToHitGroupIndex,
-                MultiplierForGeometryContributionToHitGroupIndex,
-                q.CommittedInstanceIndex(),
-                q.CommittedInstanceID(),
-                q.CommittedGeometryIndex(),
-                q.CommittedPrimitiveIndex(),
-                q.CommittedRayT(),
-                q.CommittedTriangleBarycentrics(),
-                q.CommittedTriangleFrontFace(),
-                Ray.Origin,
-                Ray.TMin,
-                Ray.Direction,
-                Ray.TMax,
-                RayFlags,
-                Payload);
-        }
-        else
-        {
-            __metalRTCallMissHandler(
-                MissShaderIndex,
-                Ray.Origin,
-                Ray.TMin,
-                Ray.Direction,
-                Ray.TMax,
-                RayFlags,
-                Payload);
-        }
+        // Metal has no driver-level ray-tracing pipeline; the legalizer
+        // expands this intrinsic into `intersector<>::intersect()` traversal
+        // (which invokes any linked anyhit/intersection functions through
+        // the `slang_rtIsect` intersection function table) plus the
+        // software-SBT dispatch of the closest-hit or miss shader through
+        // the `slang_rtHandlers` visible function table. See
+        // docs/design/metal-raytracing.md, section 5.
+        __metalRTTraceRay(
+            AccelerationStructure,
+            RayFlags,
+            InstanceInclusionMask,
+            RayContributionToHitGroupIndex,
+            MultiplierForGeometryContributionToHitGroupIndex,
+            MissShaderIndex,
+            Ray.Origin,
+            Ray.TMin,
+            Ray.Direction,
+            Ray.TMax,
+            Payload);
     }
     }
 }
@@ -20022,7 +19992,7 @@ bool __reportIntersection(float tHit, uint hitKind)
 /// @category raytracing
 __generic<A>
 [ForceInline]
-[require(glsl_hlsl_spirv, raytracing_intersection)]
+[require(glsl_hlsl_metal_spirv, raytracing_intersection)]
 bool ReportHit(float tHit, uint hitKind, A attributes)
 {
     __target_switch
@@ -20035,6 +20005,13 @@ bool ReportHit(float tHit, uint hitKind, A attributes)
         static A a;
         a = attributes;
         return __reportIntersection(tHit, hitKind);
+    case metal:
+        // Lowered by `legalizeMetalRayTracing` into the accept/reject
+        // protocol of a Metal bounding-box intersection function: when tHit
+        // is inside the current search interval, the attributes and hit kind
+        // are stored into the `slang_RTContext` and the function returns
+        // an accepting result carrying tHit.
+        return __metalRTReportHit(tHit, hitKind, attributes);
     }
 }
 
@@ -20063,7 +20040,7 @@ bool ReportHitOptix(float tHit, uint hitKind, expand each T attribs)
 /// Ignores the current intersection and continues traversal.
 /// @remarks Used in any-hit shaders to reject potential intersections
 /// @category raytracing
-[require(cuda_glsl_hlsl_spirv, raytracing_anyhit)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_anyhit)]
 void IgnoreHit()
 {
     __target_switch
@@ -20071,6 +20048,7 @@ void IgnoreHit()
     case hlsl: __intrinsic_asm "IgnoreHit";
     case glsl: __intrinsic_asm "ignoreIntersectionEXT;";
     case cuda: __intrinsic_asm "optixIgnoreIntersection";
+    case metal: __metalRTIgnoreHit();
     case spirv:
         spirv_asm
         {
@@ -20083,7 +20061,7 @@ void IgnoreHit()
 /// Accepts the current intersection and terminates further traversal.
 /// @remarks Used in any-hit shaders to immediately accept an intersection
 /// @category raytracing
-[require(cuda_glsl_hlsl_spirv, raytracing_anyhit)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_anyhit)]
 void AcceptHitAndEndSearch()
 {
     __target_switch
@@ -20091,6 +20069,7 @@ void AcceptHitAndEndSearch()
     case hlsl: __intrinsic_asm "AcceptHitAndEndSearch";
     case glsl: __intrinsic_asm "terminateRayEXT;";
     case cuda: __intrinsic_asm "optixTerminateRay";
+    case metal: __metalRTAcceptHitAndEndSearch();
     case spirv:
         spirv_asm
         {
@@ -20109,10 +20088,14 @@ void AcceptHitAndEndSearch()
 // On the Metal target the DXR system values live in the per-thread
 // `slang_RTContext` struct: the ray-generation kernel owns it as a local
 // variable (filling the launch fields from `thread_position_in_grid` /
-// `threads_per_grid`), and miss/closest-hit shaders receive it as their
-// first parameter, filled by the `TraceRay` expansion. Each of these
-// intrinsics lowers to a load of the corresponding context field in
-// `legalizeMetalRayTracing` (slang-ir-metal-legalize-raytracing.cpp).
+// `threads_per_grid`), miss/closest-hit shaders receive it as their first
+// parameter, and anyhit/intersection functions receive it as their
+// `[[payload]]` argument. `legalizeMetalRayTracing`
+// (slang-ir-metal-legalize-raytracing.cpp) lowers each of these intrinsics
+// to a load of the corresponding context field, or — inside anyhit and
+// intersection functions, where Metal supplies the candidate state as
+// tagged parameters (`[[distance]]`, `[[primitive_id]]`, ...) — to the
+// corresponding parameter value.
 __intrinsic_op($(kIROp_MetalRTDispatchRaysIndex))
 uint3 __metalRTDispatchRaysIndex();
 __intrinsic_op($(kIROp_MetalRTDispatchRaysDimensions))

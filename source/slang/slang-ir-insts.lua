@@ -713,6 +713,17 @@ local insts = {
 					hoistable = true,
 				},
 			},
+			{
+				MetalIntersectionFunctionTable = {
+					-- The type of a Metal
+					-- `intersection_function_table<triangle_data, instancing>`
+					-- kernel parameter, holding the anyhit/intersection
+					-- functions that `intersector<>::intersect()` invokes
+					-- during traversal.
+					struct_name = "MetalIntersectionFunctionTableType",
+					hoistable = true,
+				},
+			},
 			{ CoopVectorType = { operands = { { "elementType", "IRType" }, { "elementCount" } }, hoistable = true } },
 			{
 				CoopMatrixType = {
@@ -1692,40 +1703,53 @@ local insts = {
 	{ metalRTGeometryIndex = {} },
 	{ metalRTPrimitiveIndex = {} },
 	{ metalRTHitKind = {} },
-	-- Invoke the selected miss shader through the visible function table.
+	-- The full `TraceRay` call: traversal through the acceleration structure
+	-- followed by the shader-binding-table dispatch of the closest-hit or
+	-- miss shader.
 	{
-		metalRTCallMissHandler = {
+		metalRTTraceRay = {
 			operands = {
+				{ "accelerationStructure" },
+				{ "rayFlags" },
+				{ "instanceInclusionMask" },
+				{ "rayContributionToHitGroupIndex" },
+				{ "multiplierForGeometryContribution" },
 				{ "missShaderIndex" },
 				{ "origin" },
 				{ "tMin" },
 				{ "direction" },
 				{ "tMax" },
-				{ "rayFlags" },
 				{ "payloadPtr" },
 			},
 		},
 	},
-	-- Invoke the selected hit-group (closest-hit) shader through the visible
-	-- function table using the DXR hit-group indexing formula.
+	-- DXR `ReportHit(tHit, hitKind, attributes)` in an intersection shader.
 	{
-		metalRTCallHitHandler = {
+		metalRTReportHit = {
 			operands = {
-				{ "rayContributionToHitGroupIndex" },
-				{ "multiplierForGeometryContribution" },
-				{ "instanceIndex" },
-				{ "instanceID" },
-				{ "geometryIndex" },
-				{ "primitiveIndex" },
 				{ "hitT" },
-				{ "barycentrics" },
-				{ "isFrontFace" },
-				{ "origin" },
-				{ "tMin" },
-				{ "direction" },
-				{ "tMax" },
+				{ "hitKind" },
+				{ "attributes" },
+			},
+		},
+	},
+	-- DXR `IgnoreHit()` / `AcceptHitAndEndSearch()` in an anyhit shader.
+	{ metalRTIgnoreHit = {} },
+	{ metalRTAcceptHitAndEndSearch = {} },
+	-- Run the traversal half of one `TraceRay`: the emitter prints a call to
+	-- the `_slang_rtTrace` prelude helper, which drives
+	-- `intersector<>::intersect()` and fills the committed-hit fields of the
+	-- `slang_RTContext` that `ctxPtr` points to. Returns the committed
+	-- intersection type (0 = none, 1 = triangle, 2 = bounding box). An
+	-- optional fifth operand supplies the `slang_rtIsect` intersection
+	-- function table when the program links anyhit/intersection stages.
+	{
+		metalRTIntersect = {
+			operands = {
+				{ "ctxPtr" },
+				{ "accelerationStructure" },
+				{ "instanceInclusionMask" },
 				{ "rayFlags" },
-				{ "payloadPtr" },
 			},
 		},
 	},

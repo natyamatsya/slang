@@ -277,6 +277,18 @@ void MetalSourceEmitter::emitEntryPointAttributesImpl(
     case Stage::Callable:
         m_writer->emit("[[visible]] ");
         break;
+    // Anyhit and intersection shaders become Metal intersection functions,
+    // invoked by `intersector<>::intersect()` through the `slang_rtIsect`
+    // intersection function table. The tags must match the intersector's
+    // (`_slang_rtTrace` in the prelude uses the same pair).
+    case Stage::AnyHit:
+        m_writer->emit(
+            "[[intersection(triangle, raytracing::triangle_data, raytracing::instancing)]] ");
+        break;
+    case Stage::Intersection:
+        m_writer->emit(
+            "[[intersection(bounding_box, raytracing::triangle_data, raytracing::instancing)]] ");
+        break;
     default:
         SLANG_ABORT_COMPILATION("unsupported stage.");
     }
@@ -742,6 +754,32 @@ bool MetalSourceEmitter::tryEmitInstExprImpl(IRInst* inst, const EmitOpInfo& inO
 {
     switch (inst->getOp())
     {
+    case kIROp_MetalRTIntersect:
+        {
+            // The traversal half of one TraceRay: the `_slang_rtTrace`
+            // prelude helper configures an `intersector<>` from the DXR ray
+            // flags, runs `intersect()` (with the intersection function
+            // table when one is linked, operand 4), fills the committed-hit
+            // fields of the context, and returns the committed intersection
+            // type.
+            auto intersect = cast<IRMetalRTIntersect>(inst);
+            ensurePrelude(kMetalBuiltinPreludeRTTrace);
+            m_writer->emit("_slang_rtTrace(");
+            emitOperand(intersect->getCtxPtr(), getInfo(EmitOp::General));
+            m_writer->emit(", ");
+            emitOperand(intersect->getAccelerationStructure(), getInfo(EmitOp::General));
+            if (intersect->getOperandCount() > 4)
+            {
+                m_writer->emit(", ");
+                emitOperand(intersect->getOperand(4), getInfo(EmitOp::General));
+            }
+            m_writer->emit(", ");
+            emitOperand(intersect->getInstanceInclusionMask(), getInfo(EmitOp::General));
+            m_writer->emit(", ");
+            emitOperand(intersect->getRayFlags(), getInfo(EmitOp::General));
+            m_writer->emit(")");
+            return true;
+        }
     case kIROp_MetalRTHandlerCall:
         {
             // The indexed call through the visible function table that
@@ -907,12 +945,20 @@ bool MetalSourceEmitter::tryEmitInstExprImpl(IRInst* inst, const EmitOpInfo& inO
 
             if (toIsPointer || fromIsPointer)
             {
-                // C-style cast for pointer conversions
+                // C-style cast for pointer conversions. The cast binds more
+                // loosely than postfix operators, so when this expression is
+                // folded into e.g. a member access (`(T*)(p)->m` would parse
+                // as a cast of the member), the whole cast must be
+                // parenthesized.
+                EmitOpInfo outerPrec = inOuterPrec;
+                auto prec = getInfo(EmitOp::Prefix);
+                bool needClose = maybeEmitParens(outerPrec, prec);
                 m_writer->emit("(");
                 emitType(toType);
                 m_writer->emit(")(");
                 emitOperand(inst->getOperand(0), getInfo(EmitOp::General));
                 m_writer->emit(")");
+                maybeCloseParens(needClose);
             }
             else
             {
@@ -1262,7 +1308,43 @@ void MetalSourceEmitter::emitSimpleValueImpl(IRInst* inst)
 
 void MetalSourceEmitter::emitParamTypeImpl(IRType* type, String const& name)
 {
+    // A pointer parameter in the `ray_data` address space is the
+    // `[[payload]]` argument of an intersection function; Metal requires it
+    // to be spelled as a reference. Its uses still treat it as a pointer —
+    // `emitParamOperandImpl` below emits them as `(&name)`.
+    if (auto ptrType = as<IRPtrTypeBase>(type))
+    {
+        if (ptrType->getAddressSpace() == AddressSpace::MetalRayData)
+        {
+            m_writer->emit("ray_data ");
+            emitType((IRType*)ptrType->getValueType());
+            m_writer->emit("& ");
+            m_writer->emit(name);
+            return;
+        }
+    }
     emitType(type, name);
+}
+
+void MetalSourceEmitter::emitParamOperandImpl(IRInst* param, EmitOpInfo const& outerPrec)
+{
+    // The counterpart of the reference spelling above: a `ray_data` pointer
+    // parameter is declared as a reference, so uses of its pointer value
+    // take the reference's address.
+    if (auto ptrType = as<IRPtrTypeBase>(param->getDataType()))
+    {
+        if (ptrType->getAddressSpace() == AddressSpace::MetalRayData)
+        {
+            auto prec = getInfo(EmitOp::Prefix);
+            auto newOuterPrec = outerPrec;
+            bool needClose = maybeEmitParens(newOuterPrec, prec);
+            m_writer->emit("&");
+            m_writer->emit(getName(param));
+            maybeCloseParens(needClose);
+            return;
+        }
+    }
+    Super::emitParamOperandImpl(param, outerPrec);
 }
 
 void MetalSourceEmitter::_validateCoopMatrixType(IRCoopMatrixType* coopType)
@@ -1389,6 +1471,15 @@ void MetalSourceEmitter::emitSimpleTypeImpl(IRType* type)
                            "raytracing::instancing>");
             return;
         }
+    case kIROp_MetalIntersectionFunctionTableType:
+        {
+            // The tag pair must match the intersector in the `_slang_rtTrace`
+            // prelude and the `[[intersection(...)]]` attributes of the
+            // emitted anyhit/intersection functions.
+            m_writer->emit("raytracing::intersection_function_table<raytracing::triangle_data, "
+                           "raytracing::instancing>");
+            return;
+        }
     case kIROp_MetalVisibleFunctionTableType:
         {
             // `visible_function_table<R(Params...)>`, spelling the uniform
@@ -1450,6 +1541,10 @@ void MetalSourceEmitter::emitSimpleTypeImpl(IRType* type)
                 break;
             case AddressSpace::MetalObjectData:
                 m_writer->emit(" object_data");
+                m_writer->emit("*");
+                break;
+            case AddressSpace::MetalRayData:
+                m_writer->emit(" ray_data");
                 m_writer->emit("*");
                 break;
             default:

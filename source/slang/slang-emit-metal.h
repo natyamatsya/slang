@@ -82,6 +82,7 @@ protected:
     virtual void emitMeshShaderModifiersImpl(IRInst* varInst) SLANG_OVERRIDE;
     virtual void emitSimpleTypeImpl(IRType* type) SLANG_OVERRIDE;
     virtual void emitParamTypeImpl(IRType* type, String const& name) SLANG_OVERRIDE;
+    virtual void emitParamOperandImpl(IRInst* param, EmitOpInfo const& outerPrec) SLANG_OVERRIDE;
     virtual void emitVectorTypeNameImpl(IRType* elementType, IRIntegerValue elementCount)
         SLANG_OVERRIDE;
     virtual void emitVarDecorationsImpl(IRInst* varDecl) SLANG_OVERRIDE;
@@ -133,6 +134,7 @@ protected:
     static const char* kMetalBuiltinPreludeMatrixFmod;
     static const char* kMetalBuiltinPreludeSimdgroupMatrixOps;
     static const char* kMetalBuiltinPreludeLogging;
+    static const char* kMetalBuiltinPreludeRTTrace;
 };
 
 } // namespace Slang

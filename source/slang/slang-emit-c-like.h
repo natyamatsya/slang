@@ -646,6 +646,11 @@ protected:
     virtual void emitSimpleFuncImpl(IRFunc* func);
     virtual void emitVarExpr(IRInst* inst, EmitOpInfo const& outerPrec);
     virtual void emitOperandImpl(IRInst* inst, EmitOpInfo const& outerPrec);
+    /// Emit a use of a function parameter as an expression operand. Emits the
+    /// parameter's name by default; targets that declare certain parameters
+    /// with a different value category can adjust the use site to match
+    /// (e.g. Metal's `[[payload]]` reference parameters emit as `(&name)`).
+    virtual void emitParamOperandImpl(IRInst* param, EmitOpInfo const& outerPrec);
     virtual void emitParamTypeImpl(IRType* type, String const& name);
     virtual void emitParamTypeModifier(IRType* type) { SLANG_UNUSED(type); }
     virtual void emitIntrinsicCallExprImpl(

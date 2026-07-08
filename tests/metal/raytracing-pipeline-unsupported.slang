@@ -51,18 +51,28 @@ void missTransitive(inout RayPayload payload)
     payload.color = fetchMissColor();
 }
 
-// Only the built-in triangle attribute shape (a struct holding one float2)
-// is supported until intersection functions land (phase P1):
-struct ProceduralAttrs
-{
-    float3 normal;
-};
-
+// Intersection attributes must be a struct (the built-in triangle shape or
+// a user-defined struct for procedural hits):
 //CHECK-DAG: 56114
 [shader("closesthit")]
-void closestHitBadAttrs(inout RayPayload payload, in ProceduralAttrs attrs)
+void closestHitBadAttrs(inout RayPayload payload, in float2 attrs)
 {
-    payload.color = float4(attrs.normal, 1.0);
+    payload.color = float4(attrs, 0.0, 1.0);
+}
+
+// ... and must fit the 32-byte attribute blob of the context:
+struct HugeAttrs
+{
+    float4 a;
+    float4 b;
+    float4 c; // 48 bytes > 32
+};
+
+//CHECK-DAG: 56117
+[shader("closesthit")]
+void closestHitHugeAttrs(inout RayPayload payload, in HugeAttrs attrs)
+{
+    payload.color = attrs.a;
 }
 
 // TraceRay from a closest-hit shader (recursion) arrives in phase P3:

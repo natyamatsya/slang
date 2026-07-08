@@ -5725,7 +5725,7 @@ warning(
 -- Load semantic checking diagnostics (part 15) - Target code generation and platform-specific diagnostics
 -- (inlined from slang-diagnostics-semantic-checking-15.lua)
 
--- Metal or WGSL (56101-56116)
+-- Metal or WGSL (56101-56117)
 
 err(
     "resource-types-in-constant-buffer-in-parameter-block-not-allowed-on-metal",
@@ -5794,7 +5794,7 @@ err(
     "metal-raytracing-stage-not-supported",
     56110,
     "ray-tracing stage not yet supported for the Metal target",
-    span { loc = "location", message = "the '~stageName' stage is not yet supported for the Metal target; the supported ray-tracing pipeline stages are 'raygeneration', 'miss', and 'closesthit'." }
+    span { loc = "location", message = "the '~stageName' stage is not yet supported for the Metal target; the supported ray-tracing pipeline stages are 'raygeneration', 'miss', 'closesthit', 'anyhit', and 'intersection'." }
 )
 
 err(
@@ -5814,22 +5814,29 @@ err(
 err(
     "metal-raytracing-global-param-in-handler",
     56113,
-    "global state used in a Metal miss/closest-hit shader",
-    span { loc = "location", message = "global shader parameter or mutable global variable '~paramName:IRInst' is referenced from ray-tracing entry point '~entryPointName:IRInst'; on the Metal target, miss and closest-hit shaders cannot access globally bound resources or module-scope mutable state yet (the 'slang_RTGlobals' aggregation is not implemented)." }
+    "global state used in a Metal ray-tracing shader stage",
+    span { loc = "location", message = "global shader parameter or mutable global variable '~paramName:IRInst' is referenced from ray-tracing entry point '~entryPointName:IRInst'; on the Metal target, ray-tracing stages other than 'raygeneration' cannot access globally bound resources or module-scope mutable state yet (the 'slang_RTGlobals' aggregation is not implemented)." }
 )
 
 err(
     "metal-raytracing-attribute-type-not-supported",
     56114,
     "unsupported intersection attribute type for the Metal target",
-    span { loc = "location", message = "closest-hit intersection attribute type '~attributeType:IRInst' is not supported for the Metal target; only 'BuiltInTriangleIntersectionAttributes' (a struct holding a single 'float2') is supported." }
+    span { loc = "location", message = "intersection attribute type '~attributeType:IRInst' is not supported for the Metal target; attributes must be a struct type ('BuiltInTriangleIntersectionAttributes' for triangle hits, or a user-defined struct for procedural hits)." }
 )
 
 err(
     "metal-raytracing-intrinsic-outside-entry-point",
     56115,
     "ray-tracing intrinsic used outside a supported entry point on the Metal target",
-    span { loc = "location", message = "on the Metal target, ray-tracing intrinsics may only be used inside a 'raygeneration', 'miss', or 'closesthit' entry point, or inside functions that can be inlined into one; make sure any helper function using them is not marked '[noinline]'." }
+    span { loc = "location", message = "on the Metal target, ray-tracing intrinsics may only be used inside a supported ray-tracing entry point of the right stage, or inside functions that can be inlined into one; make sure any helper function using them is not marked '[noinline]'." }
+)
+
+err(
+    "metal-raytracing-attributes-too-large",
+    56117,
+    "intersection attributes exceed the Metal ray-tracing attribute size limit",
+    span { loc = "location", message = "intersection attribute type '~attributeType:IRInst' is ~attributeSize bytes, which exceeds the ~maxSize-byte attribute blob of the Metal ray-tracing ABI (see docs/design/metal-raytracing.md)." }
 )
 
 err(

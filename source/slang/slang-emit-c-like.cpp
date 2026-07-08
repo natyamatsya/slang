@@ -1987,10 +1987,19 @@ void CLikeSourceEmitter::emitOperandImpl(IRInst* inst, EmitOpInfo const& outerPr
     case kIROp_GlobalVar:
         emitVarExpr(inst, outerPrec);
         break;
+    case kIROp_Param:
+        emitParamOperandImpl(inst, outerPrec);
+        break;
     default:
         m_writer->emit(getName(inst));
         break;
     }
+}
+
+void CLikeSourceEmitter::emitParamOperandImpl(IRInst* param, EmitOpInfo const& outerPrec)
+{
+    SLANG_UNUSED(outerPrec);
+    m_writer->emit(getName(param));
 }
 
 void CLikeSourceEmitter::emitArgs(IRInst* inst)
@@ -2357,8 +2366,11 @@ void CLikeSourceEmitter::emitInstStmt(IRInst* inst)
 
 void CLikeSourceEmitter::diagnoseUnhandledInst(IRInst* inst)
 {
+    StringBuilder message;
+    message << "unexpected IR opcode '" << getIROpInfo(inst->getOp()).name
+            << "' during code emit";
     getSink()->diagnose(Diagnostics::Unimplemented{
-        .feature = "unexpected IR opcode during code emit",
+        .feature = message.produceString(),
         .location = inst->sourceLoc});
 }
 

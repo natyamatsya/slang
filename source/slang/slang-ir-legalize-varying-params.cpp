@@ -7,6 +7,7 @@
 #include "slang-ir-layout.h"
 #include "slang-ir-lower-out-parameters.h"
 #include "slang-ir-lower-tuple-types.h"
+#include "slang-ir-metal-legalize-raytracing.h"
 #include "slang-ir-util.h"
 #include "slang-parameter-binding.h"
 #include "slang-rich-diagnostics.h"
@@ -5138,7 +5139,21 @@ void legalizeEntryPointVaryingParamsForMetal(
     DiagnosticSink* sink,
     List<EntryPointInfo>& entryPoints)
 {
+    // Ray-tracing entry points have no varying inputs or outputs on Metal:
+    // legalizeMetalRayTracing has already rewritten their signatures to the
+    // execution model's fixed forms (kernel parameters, handler pointers,
+    // intersection-function tags and result structs), which this pass must
+    // not wrap in stage-in/out structures.
+    List<EntryPointInfo> nonRayTracingEntryPoints;
     for (auto& e : entryPoints)
+    {
+        auto stage = e.entryPointDecor->getProfile().getStage();
+        if (stage == Stage::RayGeneration || isMetalRayTracingHandlerStage(stage))
+            continue;
+        nonRayTracingEntryPoints.add(e);
+    }
+
+    for (auto& e : nonRayTracingEntryPoints)
     {
         // Both vertex and fragment stages produce varying outputs that Metal models as
         // return-struct fields, so an `out`/`inout` output parameter on either stage must be
@@ -5159,7 +5174,7 @@ void legalizeEntryPointVaryingParamsForMetal(
         }
     }
     LegalizeMetalEntryPointContext context(module, sink);
-    context.legalizeEntryPoints(entryPoints);
+    context.legalizeEntryPoints(nonRayTracingEntryPoints);
 }
 
 void legalizeEntryPointVaryingParamsForWGSL(

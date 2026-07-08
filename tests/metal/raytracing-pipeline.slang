@@ -41,31 +41,25 @@ void rayGenMain()
     RayPayload payload;
     payload.color = float4(0, 0, 0, 0);
 
-    // The traversal half reuses the proven intersection-query lowering:
-    // METAL: intersection_query<raytracing::triangle_data, raytracing::instancing>
+    // The payload is packed into the context blob, then the traversal half
+    // runs through the _slang_rtTrace prelude helper (intersector<>-based;
+    // this triangles-only program links no intersection function table, so
+    // the no-table overload is called):
+    // METAL: (RayPayload{{[^)]*}} thread*)(&(&slang_rtCtx{{[^)]*}})->payload)
+    // METAL: _slang_rtTrace(&slang_rtCtx{{[^,]*}},
     //
-    // The hit dispatch computes the DXR hit-group record index
-    // (hitBase + rayContribution + multiplier * geometryIndex
-    //  + instanceSbtOffsets[instanceIndex]; the 0-contribution and
-    // 1-multiplier of this call fold away), packs the payload into the
-    // context blob, and calls through the table:
-    // METAL: get_committed_geometry_id
-    //
-    // Fixed-function triangle hit kinds: 254 for front faces, 255 for back
-    // faces (MSL select returns its second operand when the condition is
-    // true):
-    // METAL: select(255U, 254U,
-    // METAL: ->hitBase
-    // METAL-SAME: instanceSbtOffsets
-    // METAL: (RayPayload{{[^)]*}} thread*)(&(&slang_rtCtx{{[^)]*}})->payload
-    // METAL: slang_rtHandlers{{[^[]*}}[{{[^]]*}}](&slang_rtCtx{{[^,]*}}, slang_rtGlobals{{[^)]*}})
+    // The hit dispatch computes the DXR hit-group record index against the
+    // committed-hit state the helper stored in the context
+    // (hitBase + rayContribution + multiplier * ctx.geometryIndex
+    //  + instanceSbtOffsets[ctx.instanceIndex]; the 0-contribution and
+    // 1-multiplier of this call fold away) and calls through the table:
+    // METAL: slang_rtHandlers{{[^[]*}}[{{[^]]*}}->hitBase{{[^]]*}}geometryIndex{{[^]]*}}instanceSbtOffsets{{[^]]*}}](&slang_rtCtx{{[^,]*}}, slang_rtGlobals{{[^)]*}})
     //
     // The miss dispatch stores the ray's TMax into the committed-distance
     // field (DXR: RayTCurrent() in a miss shader equals RayTMax) and indexes
     // from missBase:
     // METAL: ->hitT{{[^=]*}}= {{.*}}TMax
-    // METAL: ->missBase
-    // METAL: slang_rtHandlers{{[^[]*}}[{{[^]]*}}](&slang_rtCtx{{[^,]*}}, slang_rtGlobals{{[^)]*}})
+    // METAL: slang_rtHandlers{{[^[]*}}[{{[^]]*}}->missBase{{[^]]*}}](&slang_rtCtx{{[^,]*}}, slang_rtGlobals{{[^)]*}})
     TraceRay(scene, RAY_FLAG_NONE, 0xff, 0, 1, 0, ray, payload);
 
     outputBuffer[idx.y * dim.x + idx.x] = payload.color;
