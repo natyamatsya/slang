@@ -48,7 +48,8 @@ void rayGenMain()
 // The intersection shader becomes a bounding-box intersection function with
 // the search interval and candidate state as tagged parameters and the
 // context as the ray_data payload reference:
-// METAL-DAG: {{\[\[}}intersection(bounding_box, raytracing::triangle_data, raytracing::instancing){{\]\]}} slang_RTBBoxResult isectMain({{[^)]*}}min_distance{{[^)]*}}max_distance{{[^)]*}}ray_data slang_RTContext& slang_rtCtx{{[^ ]*}} {{\[\[}}payload{{\]\]}})
+// METAL-DAG: {{\[\[}}intersection(bounding_box, raytracing::triangle_data, raytracing::instancing, raytracing::world_space_data){{\]\]}} slang_RTBBoxResult isectMain(
+// METAL-DAG: min_distance{{.*}}max_distance{{.*}}ray_data slang_RTContext& slang_rtCtx{{[^ ]*}} {{\[\[}}payload{{\]\]}}
 //
 // ReportHit writes the attributes into the context's attribute blob (as a
 // ray_data reinterpretation) and the hit kind into the context:

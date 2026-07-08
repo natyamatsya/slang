@@ -66,7 +66,11 @@ static const int kMetalRTCommittedNone = 0;
     M(MetalRTInstanceID,             instanceIDKey)     \
     M(MetalRTGeometryIndex,          geometryIndexKey)  \
     M(MetalRTPrimitiveIndex,         primitiveIndexKey) \
-    M(MetalRTHitKind,                hitKindKey)
+    M(MetalRTHitKind,                hitKindKey)            \
+    M(MetalRTObjectToWorld,          objectToWorldKey)      \
+    M(MetalRTWorldToObject,          worldToObjectKey)      \
+    M(MetalRTObjectRayOrigin,        objectRayOriginKey)    \
+    M(MetalRTObjectRayDirection,     objectRayDirectionKey)
 // clang-format on
 
 namespace
@@ -112,6 +116,10 @@ struct MetalRayTracingLegalizationContext
     IRStructKey* primitiveIndexKey = nullptr;
     IRStructKey* hitKindKey = nullptr;
     IRStructKey* triBarycentricsKey = nullptr;
+    IRStructKey* objectToWorldKey = nullptr;
+    IRStructKey* worldToObjectKey = nullptr;
+    IRStructKey* objectRayOriginKey = nullptr;
+    IRStructKey* objectRayDirectionKey = nullptr;
     IRStructKey* attributesKey = nullptr;
     IRStructKey* payloadKey = nullptr;
     IRStructKey* launchIndexKey = nullptr;
@@ -335,6 +343,19 @@ static void ensureSharedTypes(MetalRayTracingLegalizationContext& context)
     context.primitiveIndexKey = addField(ctxType, "primitiveIndex", uintType);
     context.hitKindKey = addField(ctxType, "hitKind", uintType);
     context.triBarycentricsKey = addField(ctxType, "triBarycentrics", float2Type);
+    // Instance transforms and the object-space ray of the committed hit,
+    // filled by the trace helper from the world_space_data intersector
+    // results (Metal float4x3 = 4 columns x 3 rows; the emitted `float4x3`
+    // spelling matches how the RayQuery path already exposes these).
+    auto float4x3Type = builder.getMatrixType(
+        floatType,
+        builder.getIntValue(builder.getIntType(), 4),
+        builder.getIntValue(builder.getIntType(), 3),
+        builder.getIntValue(builder.getIntType(), SLANG_MATRIX_LAYOUT_ROW_MAJOR));
+    context.objectToWorldKey = addField(ctxType, "objectToWorld", float4x3Type);
+    context.worldToObjectKey = addField(ctxType, "worldToObject", float4x3Type);
+    context.objectRayOriginKey = addField(ctxType, "objectRayOrigin", float3Type);
+    context.objectRayDirectionKey = addField(ctxType, "objectRayDirection", float3Type);
     context.attributesKey = addField(
         ctxType,
         "attributes",
@@ -934,10 +955,35 @@ static void addIntersectionFunctionCommonParams(
     // Note that Metal's `[[origin]]`/`[[direction]]` are the OBJECT-space
     // ray inside intersection functions; `WorldRayOrigin()`/`WorldRayDirection()`
     // therefore read the world-space context fields the trace dispatch
-    // stored (no override), and these parameters are reserved for future
-    // `ObjectRayOrigin()`/`ObjectRayDirection()` support.
-    addSystemParam(builder, func, float3Type, "slang_rtObjOrigin", String("origin"));
-    addSystemParam(builder, func, float3Type, "slang_rtObjDirection", String("direction"));
+    // stored (no override), while `ObjectRayOrigin()`/`ObjectRayDirection()`
+    // and the instance transforms come from the candidate's own tagged
+    // parameters (exact during traversal, unlike the context fields, which
+    // hold committed state only after intersect() returns).
+    auto objOriginParam =
+        addSystemParam(builder, func, float3Type, "slang_rtObjOrigin", String("origin"));
+    info.readerOverrides[kIROp_MetalRTObjectRayOrigin] = objOriginParam;
+    auto objDirectionParam =
+        addSystemParam(builder, func, float3Type, "slang_rtObjDirection", String("direction"));
+    info.readerOverrides[kIROp_MetalRTObjectRayDirection] = objDirectionParam;
+    auto float4x3Type = builder.getMatrixType(
+        builder.getBasicType(BaseType::Float),
+        builder.getIntValue(builder.getIntType(), 4),
+        builder.getIntValue(builder.getIntType(), 3),
+        builder.getIntValue(builder.getIntType(), SLANG_MATRIX_LAYOUT_ROW_MAJOR));
+    auto objectToWorldParam = addSystemParam(
+        builder,
+        func,
+        float4x3Type,
+        "slang_rtObjectToWorld",
+        String("object_to_world_transform"));
+    info.readerOverrides[kIROp_MetalRTObjectToWorld] = objectToWorldParam;
+    auto worldToObjectParam = addSystemParam(
+        builder,
+        func,
+        float4x3Type,
+        "slang_rtWorldToObject",
+        String("world_to_object_transform"));
+    info.readerOverrides[kIROp_MetalRTWorldToObject] = worldToObjectParam;
 
     const struct
     {
