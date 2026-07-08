@@ -1706,6 +1706,10 @@ local insts = {
 	{ metalRTGeometryIndex = {} },
 	{ metalRTPrimitiveIndex = {} },
 	{ metalRTHitKind = {} },
+	{ metalRTObjectToWorld = {} },
+	{ metalRTWorldToObject = {} },
+	{ metalRTObjectRayOrigin = {} },
+	{ metalRTObjectRayDirection = {} },
 	-- The full `TraceRay` call: traversal through the acceleration structure
 	-- followed by the shader-binding-table dispatch of the closest-hit or
 	-- miss shader.

@@ -279,11 +279,13 @@ void MetalSourceEmitter::emitEntryPointAttributesImpl(
     // (`_slang_rtTrace` in the prelude uses the same pair).
     case Stage::AnyHit:
         m_writer->emit(
-            "[[intersection(triangle, raytracing::triangle_data, raytracing::instancing)]] ");
+            "[[intersection(triangle, raytracing::triangle_data, raytracing::instancing, "
+            "raytracing::world_space_data)]] ");
         break;
     case Stage::Intersection:
         m_writer->emit(
-            "[[intersection(bounding_box, raytracing::triangle_data, raytracing::instancing)]] ");
+            "[[intersection(bounding_box, raytracing::triangle_data, raytracing::instancing, "
+            "raytracing::world_space_data)]] ");
         break;
     default:
         SLANG_ABORT_COMPILATION("unsupported stage.");
@@ -1473,7 +1475,7 @@ void MetalSourceEmitter::emitSimpleTypeImpl(IRType* type)
             // prelude and the `[[intersection(...)]]` attributes of the
             // emitted anyhit/intersection functions.
             m_writer->emit("raytracing::intersection_function_table<raytracing::triangle_data, "
-                           "raytracing::instancing>");
+                           "raytracing::instancing, raytracing::world_space_data>");
             return;
         }
     case kIROp_MetalVisibleFunctionTableType:

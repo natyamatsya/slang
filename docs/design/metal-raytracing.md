@@ -1,6 +1,6 @@
 # Metal Ray-Tracing Pipeline Stages — Implementation Specification
 
-Status: **P0-P4 implemented, every phase validated on-device** (all six
+Status: **P0-P4 + transforms implemented, P0-P4 validated on-device** (all six
 stages, recursion, callables, the globals argument buffer, full traversal
 flag mapping, transform-correct ray spaces — Apple M2 Max, exact-value
 proofs; `ObjectToWorld`/`WorldToObject` and `ObjectRay*` remain open
@@ -579,12 +579,26 @@ with this option's usage in stage-per-envelope build systems.
   scenes never noticed the difference). The object-space parameters remain
   in the signatures, reserved for `ObjectRayOrigin()`/`ObjectRayDirection()`
   support.
-- **Still open** (needs the `world_space_data` intersector tag or a
-  runtime-provided per-instance transform buffer, which changes the tag
-  sets everywhere and the on-device-validated ABI):
-  `ObjectToWorld*`/`WorldToObject*`, `ObjectRayOrigin/Direction`, all
-  diagnosed via their missing `metal` requires. Multi-dimension launches
-  need no compiler work (the launch grid is already 3D).
+- Multi-dimension launches need no compiler work (the launch grid is
+  already 3D).
+
+### Transforms phase (`world_space_data`)
+
+`ObjectToWorld3x4/4x3`, `WorldToObject3x4/4x3`, and
+`ObjectRayOrigin/Direction` are now supported. The `world_space_data` tag
+is added — always on — to the intersection-function attributes, the
+intersection-function-table type, and the trace helper's intersector (an
+ABI text revision: the tag sets must agree everywhere; runtime binding
+APIs are unchanged, but an on-device revalidation pass is advised).
+Inside anyhit/intersection functions the values come from the candidate's
+own tagged parameters (`[[object_to_world_transform]]`,
+`[[world_to_object_transform]]`, and the object-space
+`[[origin]]`/`[[direction]]`); in closest-hit shaders they come from new
+committed context fields (`objectToWorld`, `worldToObject`,
+`objectRayOrigin`, `objectRayDirection`) that the trace helper fills from
+the intersector result, with the object-space ray computed via the
+world-to-object transform. The 3x4 intrinsics are the transposes of the
+stored 4x3 matrices, mirroring the existing Metal `RayQuery` convention.
 
 ## 11. Open questions
 
