@@ -843,10 +843,10 @@ static Int findMetalBindingIndex(IRGlobalParam* globalParam, UInt* outSpace)
 
 static void hoistHandlerGlobals(
     MetalRayTracingLegalizationContext& context,
-    List<EntryPointInfo>& handlerEntryPoints)
+    List<EntryPointInfo>& globalsUsingEntryPoints)
 {
     HashSet<IRInst*> usedGlobals;
-    for (auto& entryPoint : handlerEntryPoints)
+    for (auto& entryPoint : globalsUsingEntryPoints)
     {
         for (auto block : entryPoint.entryPointFunc->getBlocks())
             for (auto inst : block->getChildren())
@@ -1281,6 +1281,46 @@ static IRInst* addIntersectionFunctionContextParam(
 /// typed view of the context blob — no local copy — because DXR requires
 /// payload writes from an anyhit shader to persist even when the hit is
 /// ignored.
+/// Does `func` still reference any global that was hoisted into
+/// `slang_RTGlobals`? Decides whether an anyhit/intersection function needs
+/// the trailing globals-buffer parameter (per-use: functions that reference
+/// nothing declare nothing, and the runtime binds intersection-table buffer
+/// slot 0 unconditionally either way).
+static bool funcReferencesHoistedGlobal(
+    MetalRayTracingLegalizationContext& context,
+    IRFunc* func)
+{
+    for (auto block : func->getBlocks())
+        for (auto inst : block->getChildren())
+            for (UInt i = 0; i < inst->getOperandCount(); i++)
+                if (context.hoistedGlobalFields.containsKey(inst->getOperand(i)))
+                    return true;
+    return false;
+}
+
+/// Give an anyhit/intersection function its view of the globals argument
+/// buffer (runtime contract section 4): one trailing
+/// `slang_RTGlobals device* [[buffer(0)]]` parameter — intersection-table
+/// buffer slot 0, bound by the runtime via setBuffer, a distinct index
+/// space from the kernel's buffer table — and rewrite the function's
+/// hoisted-global references to loads from it, exactly as
+/// miss/closest-hit/callable handlers read theirs.
+static void addIntersectionFunctionGlobalsParam(
+    MetalRayTracingLegalizationContext& context,
+    IRBuilder& builder,
+    IRFunc* func)
+{
+    if (!funcReferencesHoistedGlobal(context, func))
+        return;
+    auto globalsParam = addSystemParam(
+        builder,
+        func,
+        context.globalsPtrType,
+        "slang_rtGlobals",
+        getMetalBufferAttr(0));
+    rewriteHoistedGlobalUses(context, builder, func, globalsParam);
+}
+
 static void processAnyHitEntryPoint(MetalRayTracingLegalizationContext& context, IRFunc* func)
 {
     ensureSharedTypes(context);
@@ -1309,6 +1349,7 @@ static void processAnyHitEntryPoint(MetalRayTracingLegalizationContext& context,
         "slang_rtFrontFace",
         String("front_facing"));
     auto ctxParam = addIntersectionFunctionContextParam(context, builder, func, info);
+    addIntersectionFunctionGlobalsParam(context, builder, func);
     info.readerOverrides[kIROp_MetalRTRayTCurrent] = distanceParam;
 
     builder.setInsertBefore(firstBlock->getFirstOrdinaryInst());
@@ -1395,6 +1436,7 @@ static void processIntersectionEntryPoint(
     auto maxTParam =
         addSystemParam(builder, func, floatType, "slang_rtMaxT", String("max_distance"));
     addIntersectionFunctionContextParam(context, builder, func, info);
+    addIntersectionFunctionGlobalsParam(context, builder, func);
     info.isectMinT = minTParam;
     info.isectMaxT = maxTParam;
     info.readerOverrides[kIROp_MetalRTRayTMin] = minTParam;
@@ -1422,9 +1464,11 @@ static void processIntersectionEntryPoint(
 /// variables from a handler-stage entry point, including references made by
 /// helper functions it calls. Visible and intersection functions cannot see
 /// the kernel's resource bindings, and Metal has no module-scope mutable
-/// state; until the `slang_RTGlobals` hoisting of section 4.3 is
-/// implemented, such references cannot be honored and must be rejected
-/// loudly rather than emitted as silently broken MSL. The check walks the
+/// state; with hoisting in place for every handler-stage kind (including
+/// the intersection-table buffer path of the runtime contract's section
+/// 4), a reference that survives to this check is module-scope mutable
+/// state or an unhoistable global, and must be rejected loudly rather than
+/// emitted as silently broken MSL. The check walks the
 /// direct-call graph because after `inlineMetalRTOpsIntoEntryPoints` only
 /// helpers *without* ray-tracing ops remain outlined, and those can still
 /// touch globals (`introduceExplicitGlobalContext` would later thread a
@@ -2114,7 +2158,14 @@ void legalizeMetalRayTracing(
     // With every handler-side global reference now physically inside its
     // entry point, decide the layout of the user-resource tail of
     // `slang_RTGlobals` before any entry is rewritten.
-    hoistHandlerGlobals(context, handlerEntryPoints);
+    // Anyhit/intersection functions receive the globals buffer through the
+    // intersection-table buffer binding (runtime contract section 4), so
+    // their referenced globals join the same hoisted set and layout.
+    List<EntryPointInfo> globalsUsingEntryPoints;
+    globalsUsingEntryPoints.addRange(handlerEntryPoints);
+    globalsUsingEntryPoints.addRange(anyHitEntryPoints);
+    globalsUsingEntryPoints.addRange(intersectionEntryPoints);
+    hoistHandlerGlobals(context, globalsUsingEntryPoints);
 
     for (auto& entryPoint : rayGenEntryPoints)
         processRayGenerationEntryPoint(context, entryPoint.entryPointFunc);

@@ -193,8 +193,9 @@ stage compile:
 
 ## 6. Work plan
 
-Implementation status: **C1 and C2 are implemented on `metal-rt-impl`**
-(the descriptor line and `-metal-rt-globals-slots`); C3 is next. One
+Implementation status: **C1, C2, and C3 are implemented on `metal-rt-impl`**
+(the descriptor line, `-metal-rt-globals-slots`, and the intersection-table
+globals path — E56113 is narrowed to module-scope mutable state). One
 consuming-side note from C2: Slang's pre-existing warning 39029 (D3D
 register without a Vulkan binding) fires on `register()` declarations in
 Metal-only compiles — stage compiles should pass `-warnings-disable 39029`.

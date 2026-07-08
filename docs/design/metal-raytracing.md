@@ -470,11 +470,11 @@ P1 replaced the P0 traversal and added the intersection-function stages:
 - E56110 now rejects only `callable` (phase P2).
 - The §4.5 sketch shows intersection functions receiving a
   `device slang_RTGlobals*` argument via the intersection-table buffer
-  binding; the implementation does not emit that parameter — global access
-  from anyhit/intersection functions is diagnosed instead (E56113). The
-  mechanism (buffer arguments on intersection functions, bound through
-  `MTLIntersectionFunctionTable.setBuffer`) is verified to compile and
-  remains the plan for lifting the restriction.
+  binding; this is now implemented (runtime-contract phase C3): a
+  globals-referencing anyhit/intersection function gains one trailing
+  `[[buffer(0)]]` parameter, bound by the runtime through
+  `MTLIntersectionFunctionTable.setBuffer`, and E56113 is narrowed to
+  module-scope mutable state.
 
 ### P2 implementation notes (callables)
 

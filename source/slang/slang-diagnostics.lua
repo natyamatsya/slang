@@ -5808,7 +5808,7 @@ err(
     "metal-raytracing-global-param-in-handler",
     56113,
     "global state used in a Metal ray-tracing shader stage",
-    span { loc = "location", message = "'~paramName:IRInst' is referenced from ray-tracing entry point '~entryPointName:IRInst'; on the Metal target, ray-tracing stages cannot access module-scope mutable state, and anyhit/intersection functions cannot access globally bound resources yet (only miss/closesthit/callable shaders receive the 'slang_RTGlobals' argument buffer)." }
+    span { loc = "location", message = "'~paramName:IRInst' is referenced from ray-tracing entry point '~entryPointName:IRInst'; on the Metal target, ray-tracing stages cannot access module-scope mutable state." }
 )
 
 err(
