@@ -85,7 +85,7 @@ struct MetalRayTracingLegalizationContext
 
     // The shared ABI types, created on first use by `ensureSharedTypes`.
     IRStructType* ctxStructType = nullptr;
-    IRFuncType* handlerFuncType = nullptr;
+    IRStructType* globalsStructType = nullptr;
     IRType* ctxPtrType = nullptr;        // slang_RTContext thread*
     IRType* ctxRayDataPtrType = nullptr; // slang_RTContext ray_data* ([[payload]])
     IRType* globalsPtrType = nullptr;
@@ -123,11 +123,20 @@ struct MetalRayTracingLegalizationContext
     IRStructKey* callableBaseKey = nullptr;
     IRStructKey* instanceSbtOffsetsKey = nullptr;
 
+    // Field keys of `slang_RTGlobals`: the fixed dispatch-state header,
+    // plus one field per hoisted user global (keyed by the global param).
+    IRStructKey* globalsHandlersKey = nullptr;
+    IRStructKey* globalsIsectKey = nullptr;
+    IRStructKey* globalsSbtKey = nullptr;
+    Dictionary<IRInst*, IRStructKey*> hoistedGlobalFields;
+
     // Per-entry-point access paths to the ABI values: the context pointer is
     // a local variable in a ray-generation kernel, the first parameter of a
-    // miss/closest-hit handler, and the `[[payload]]` parameter of an
-    // anyhit/intersection function; the table/SBT pointers only exist in
-    // the kernel, which is the only place a trace may be lowered.
+    // miss/closest-hit/callable handler, and the `[[payload]]` parameter of
+    // an anyhit/intersection function. The table/SBT handles come from the
+    // kernel's system parameters or, in a handler, from the globals
+    // argument buffer; they are null in anyhit/intersection functions,
+    // which cannot dispatch.
     struct RTEntryInfo
     {
         Stage stage = Stage::Unknown;
@@ -216,13 +225,26 @@ static bool funcContainsMetalRTOp(IRFunc* func)
     return false;
 }
 
+/// Does any instruction of `func` reference a globally bound shader
+/// parameter?
+static bool funcReferencesGlobalParam(IRFunc* func)
+{
+    for (auto block : func->getBlocks())
+        for (auto inst : block->getChildren())
+            for (UInt i = 0; i < inst->getOperandCount(); i++)
+                if (as<IRGlobalParam>(inst->getOperand(i)))
+                    return true;
+    return false;
+}
+
 /// Inline every call to a non-entry-point function that (transitively)
-/// contains a Metal ray-tracing op, so that all such ops end up physically
-/// inside their entry points, where the context variable and the system
-/// parameters are in scope. `TraceRay` itself is `[ForceInline]`, so its body
-/// is already inlined into the user's calling function; this handles user
-/// helper functions that call `TraceRay`/`ReportHit`/... or read ray-tracing
-/// system values.
+/// contains a Metal ray-tracing op or references a global shader parameter,
+/// so that both end up physically inside their entry points: ray-tracing ops
+/// need the context variable and system parameters in scope, and global
+/// references inside handler-stage entries must be rewritten to
+/// `slang_RTGlobals` fields (which only the entry can address). `TraceRay`
+/// itself is `[ForceInline]`, so its body is already inlined into the user's
+/// calling function; this handles user helper functions.
 static void inlineMetalRTOpsIntoEntryPoints(IRModule* module)
 {
     // Each round inlines every current call site of every RT-op-containing
@@ -240,7 +262,7 @@ static void inlineMetalRTOpsIntoEntryPoints(IRModule* module)
                 continue;
             if (func->findDecoration<IREntryPointDecoration>())
                 continue;
-            if (!funcContainsMetalRTOp(func))
+            if (!funcContainsMetalRTOp(func) && !funcReferencesGlobalParam(func))
                 continue;
             for (auto use = func->firstUse; use; use = use->nextUse)
             {
@@ -328,17 +350,6 @@ static void ensureSharedTypes(MetalRayTracingLegalizationContext& context)
     context.launchIndexKey = addField(ctxType, "launchIndex", uint3Type);
     context.launchDimKey = addField(ctxType, "launchDim", uint3Type);
 
-    // `slang_RTGlobals` (section 4.3): the argument-buffer struct that carries
-    // globally bound resources into the visible functions, which cannot see
-    // the kernel's bindings. Hoisting user globals into it is not implemented
-    // yet, but the struct is part of the handler signature from day one so
-    // the ABI does not change when hoisting lands. It carries one reserved
-    // field until then: MSL has no empty structs (an empty IR struct would be
-    // folded to `void`, and `void device*` is not legal MSL).
-    auto globalsType = builder.createStructType();
-    pinName(globalsType, "slang_RTGlobals");
-    addField(globalsType, "reserved", uintType);
-
     // `slang_RTSbt` (section 4.4): the software shader binding table — region
     // base indices into the visible function table plus the per-instance
     // contribution (DXR's InstanceContributionToHitGroupIndex), which Metal's
@@ -370,18 +381,30 @@ static void ensureSharedTypes(MetalRayTracingLegalizationContext& context)
         builder.addTargetSystemValueDecoration(distanceKey, UnownedStringSlice("distance"));
     }
 
+    // `slang_RTGlobals` (section 4.3): the argument buffer that carries
+    // everything a handler-stage function needs beyond the context — the
+    // dispatch state (visible function table, intersection function table,
+    // and software SBT) used when a handler itself traces or calls, followed
+    // by the user resources that handler stages reference (hoisted by
+    // `hoistHandlerGlobals`, in global declaration order). The struct is
+    // created as an empty shell first: the visible-function-table field's
+    // signature mentions `slang_RTGlobals*` itself, so the pointer and table
+    // types must exist before the fields can be added.
+    auto globalsType = builder.createStructType();
+    pinName(globalsType, "slang_RTGlobals");
+    context.globalsStructType = globalsType;
+
     context.ctxPtrType = builder.getPtrType(ctxType, AddressSpace::ThreadLocal);
     context.ctxRayDataPtrType = builder.getPtrType(ctxType, AddressSpace::MetalRayData);
     context.globalsPtrType = builder.getPtrType(globalsType, AddressSpace::Global);
     context.sbtPtrType = builder.getPtrType(sbtType, AddressSpace::Uniform);
 
-    IRType* handlerParamTypes[] = {context.ctxPtrType, context.globalsPtrType};
-    context.handlerFuncType = builder.getFuncType(2, handlerParamTypes, builder.getVoidType());
-
-    IRInst* tableOperand = context.handlerFuncType;
-    context.visibleTableType =
-        (IRType*)builder.getType(kIROp_MetalVisibleFunctionTableType, 1, &tableOperand);
+    context.visibleTableType = (IRType*)builder.getType(kIROp_MetalVisibleFunctionTableType);
     context.isectTableType = (IRType*)builder.getType(kIROp_MetalIntersectionFunctionTableType);
+
+    context.globalsHandlersKey = addField(globalsType, "handlers", context.visibleTableType);
+    context.globalsIsectKey = addField(globalsType, "isect", context.isectTableType);
+    context.globalsSbtKey = addField(globalsType, "sbt", sbtType);
 }
 
 /// Return the Metal attribute string `buffer(<index>)`.
@@ -652,6 +675,77 @@ static void replaceAttributeParam(IRBuilder& builder, IRParam* param, IRInst* at
     }
 }
 
+/// Create one `slang_RTGlobals` field per globally bound shader parameter
+/// that a miss/closest-hit/callable entry point references, in global
+/// declaration order. The order is part of the argument-buffer ABI: the
+/// runtime encodes the hoisted user resources after the fixed dispatch-state
+/// header (handlers, isect, sbt) in exactly this order. The kernel keeps its
+/// ordinary bindings for the same resources; the application binds each
+/// hoisted resource in both places.
+static void hoistHandlerGlobals(
+    MetalRayTracingLegalizationContext& context,
+    List<EntryPointInfo>& handlerEntryPoints)
+{
+    HashSet<IRInst*> usedGlobals;
+    for (auto& entryPoint : handlerEntryPoints)
+    {
+        for (auto block : entryPoint.entryPointFunc->getBlocks())
+            for (auto inst : block->getChildren())
+                for (UInt i = 0; i < inst->getOperandCount(); i++)
+                    if (auto globalParam = as<IRGlobalParam>(inst->getOperand(i)))
+                        usedGlobals.add(globalParam);
+    }
+    if (usedGlobals.getCount() == 0)
+        return;
+
+    ensureSharedTypes(context);
+    IRBuilder builder(context.module);
+    for (auto inst : context.module->getGlobalInsts())
+    {
+        auto globalParam = as<IRGlobalParam>(inst);
+        if (!globalParam || !usedGlobals.contains(globalParam))
+            continue;
+        auto key = builder.createStructKey();
+        if (auto nameHint = globalParam->findDecoration<IRNameHintDecoration>())
+        {
+            // Pin the field name to the user's parameter name, so separately
+            // compiled stage libraries agree on the emitted struct and the
+            // runtime can identify the field.
+            builder.addNameHintDecoration(key, nameHint->getName());
+            builder.addExternCppDecoration(key, nameHint->getName());
+        }
+        builder.createStructField(context.globalsStructType, key, globalParam->getFullType());
+        context.hoistedGlobalFields[globalParam] = key;
+    }
+}
+
+/// Rewrite references to hoisted user globals inside `func` to loads from
+/// the globals argument buffer (section 4.3): a visible function cannot see
+/// the kernel's bindings. After the predicate-driven inlining, every such
+/// reference sits directly in the entry's body.
+static void rewriteHoistedGlobalUses(
+    MetalRayTracingLegalizationContext& context,
+    IRBuilder& builder,
+    IRFunc* func,
+    IRInst* globalsParam)
+{
+    for (auto block : func->getBlocks())
+    {
+        for (auto bodyInst : block->getModifiableChildren())
+        {
+            for (UInt i = 0; i < bodyInst->getOperandCount(); i++)
+            {
+                IRStructKey* fieldKey = nullptr;
+                if (!context.hoistedGlobalFields.tryGetValue(bodyInst->getOperand(i), fieldKey))
+                    continue;
+                builder.setInsertBefore(bodyInst);
+                auto value = builder.emitLoad(builder.emitFieldAddress(globalsParam, fieldKey));
+                bodyInst->setOperand(i, value);
+            }
+        }
+    }
+}
+
 /// Rewrite a miss or closest-hit entry point to the uniform visible-function
 /// signature `void(slang_RTContext thread*, slang_RTGlobals device*)`. The
 /// user's payload parameter becomes a local variable that is unpacked from the
@@ -691,6 +785,33 @@ static void processHandlerEntryPoint(
     builder.addNameHintDecoration(globalsParam, UnownedStringSlice("slang_rtGlobals"));
 
     builder.setInsertBefore(insertBeforeInst);
+
+    MetalRayTracingLegalizationContext::RTEntryInfo info;
+    info.stage = stage;
+    info.ctxPtr = ctxParam;
+    info.globalsPtr = globalsParam;
+
+    // Snapshot the DXR system values at entry: a nested TraceRay/CallShader
+    // in this handler reuses the context as its dispatch scratch space, so
+    // later reads must not observe the nested state. Unused snapshots are
+    // removed by DCE.
+#define CASE(OP, KEY)                        \
+    info.readerOverrides[kIROp_##OP] =       \
+        builder.emitLoad(builder.emitFieldAddress(ctxParam, context.KEY));
+    SLANG_METAL_RT_SYSTEM_VALUE_OPS(CASE)
+#undef CASE
+
+    // Dispatch state for nested TraceRay/CallShader, read from the globals
+    // argument buffer (section 5.3); also removed by DCE when the handler
+    // does not dispatch.
+    info.handlerTable =
+        builder.emitLoad(builder.emitFieldAddress(globalsParam, context.globalsHandlersKey));
+    info.sbtPtr = builder.emitFieldAddress(globalsParam, context.globalsSbtKey);
+    if (context.hasIntersectionStages)
+    {
+        info.isectTable =
+            builder.emitLoad(builder.emitFieldAddress(globalsParam, context.globalsIsectKey));
+    }
 
     IRInst* typedPayloadBlobAddr = nullptr;
     IRInst* payloadVar = nullptr;
@@ -769,12 +890,10 @@ static void processHandlerEntryPoint(
     for (auto param : paramsToRemove)
         param->removeAndDeallocate();
 
+    rewriteHoistedGlobalUses(context, builder, func, globalsParam);
+
     fixUpFuncType(func);
 
-    MetalRayTracingLegalizationContext::RTEntryInfo info;
-    info.stage = stage;
-    info.ctxPtr = ctxParam;
-    info.globalsPtr = globalsParam;
     context.rtEntries[func] = info;
 }
 
@@ -1380,15 +1499,17 @@ static void lowerMetalRTOpsInFunc(
         case kIROp_MetalRTTraceRay:
         case kIROp_MetalRTCallShader:
             {
-                // Dispatching needs the table/SBT system parameters, which
-                // only the ray-generation kernel receives; a TraceRay or
-                // CallShader reaching any other stage (e.g. recursion from a
-                // closest-hit shader) is not supported yet (phase P3 of the
-                // design doc).
-                if (entryInfo.stage != Stage::RayGeneration)
+                // Dispatch works wherever the table/SBT state is reachable:
+                // the ray-generation kernel (system parameters) and the
+                // miss/closest-hit/callable handlers (via the globals
+                // argument buffer, section 5.3). The capability system keeps
+                // these intrinsics out of the remaining stages, so a missing
+                // table here is out-of-contract.
+                if (!entryInfo.handlerTable)
                 {
-                    context.sink->diagnose(Diagnostics::MetalRaytracingTraceOutsideRaygen{
-                        .location = getDiagnosticPos(inst)});
+                    context.sink->diagnose(
+                        Diagnostics::MetalRaytracingIntrinsicOutsideEntryPoint{
+                            .location = getDiagnosticPos(inst)});
                     inst->removeAndDeallocate();
                     continue;
                 }
@@ -1556,6 +1677,11 @@ void legalizeMetalRayTracing(
     }
 
     inlineMetalRTOpsIntoEntryPoints(module);
+
+    // With every handler-side global reference now physically inside its
+    // entry point, decide the layout of the user-resource tail of
+    // `slang_RTGlobals` before any entry is rewritten.
+    hoistHandlerGlobals(context, handlerEntryPoints);
 
     for (auto& entryPoint : rayGenEntryPoints)
         processRayGenerationEntryPoint(context, entryPoint.entryPointFunc);

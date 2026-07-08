@@ -97,6 +97,15 @@ const char* MetalSourceEmitter::kMetalBuiltinPreludeLogging = R"(
 // attribute blob, and (per DXR's definition of RayTCurrent in a
 // procedural-hit group) the barycentrics field are already maintained by
 // the accepted ReportHit, so only the shared committed fields are written.
+// The uniform handler signature of the ray-tracing ABI names the pinned
+// context/globals structs from positions that don't carry IR dependency
+// edges (e.g. inside `slang_RTGlobals` itself), so the emitted declarations
+// can precede the struct definitions; C++ only needs the names declared.
+const char* MetalSourceEmitter::kMetalBuiltinPreludeRTForwardDecls = R"(
+struct slang_RTContext;
+struct slang_RTGlobals;
+)";
+
 const char* MetalSourceEmitter::kMetalBuiltinPreludeRTTrace = R"(
 inline void _slang_rtTraceConfigure(
     thread raytracing::intersector<raytracing::triangle_data, raytracing::instancing>& i,
