@@ -1993,6 +1993,17 @@ local insts = {
 			-- A decoration that indicates that a variable represents
 			-- a vulkan ray payload, and should have a location assigned
 			-- to it.
+			-- The Metal ray-tracing ABI descriptor (runtime-contract spec section
+			-- 2): the legalizer records its cross-module ABI decisions as one
+			-- JSON string on the module, and the Metal emitter prints it as the
+			-- `// slang-metal-rt-abi:` comment line. The decoration is also the
+			-- intended transport for a future reflection query.
+			{
+				metalRTAbi = {
+					struct_name = "MetalRTAbiDecoration",
+					operands = { { "text" } },
+				},
+			},
 			{ vulkanRayPayload = { struct_name = "VulkanRayPayloadDecoration" } },
 			{ vulkanRayPayloadIn = { struct_name = "VulkanRayPayloadInDecoration" } },
 			-- A decoration that indicates that a variable represents

@@ -2023,6 +2023,22 @@ void MetalSourceEmitter::handleRequiredCapabilitiesImpl(IRInst* inst)
     SLANG_UNUSED(inst);
 }
 
+void MetalSourceEmitter::emitModuleImpl(IRModule* module, DiagnosticSink* sink)
+{
+    // The machine-readable ABI descriptor of the ray-tracing runtime
+    // contract (docs/design/metal-raytracing-runtime-contract.md section 2):
+    // one line, written by legalizeMetalRayTracing, printed verbatim so the
+    // consuming runtime can parse and cross-verify it per stage module.
+    if (auto abiDecoration =
+            module->getModuleInst()->findDecoration<IRMetalRTAbiDecoration>())
+    {
+        m_writer->emit("// slang-metal-rt-abi:");
+        m_writer->emit(as<IRStringLit>(abiDecoration->getText())->getStringSlice());
+        m_writer->emit("\n\n");
+    }
+    Super::emitModuleImpl(module, sink);
+}
+
 void MetalSourceEmitter::emitFrontMatterImpl(TargetRequest*)
 {
     m_writer->emit("#include <metal_stdlib>\n");
