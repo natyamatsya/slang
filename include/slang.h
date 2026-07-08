@@ -1314,6 +1314,12 @@ typedef uint32_t SlangSizeT;
         // pipelines that use intersection functions. CLI: -metal-rt-force-isect-table.
         MetalRTForceIsectTable = 158,
 
+        // Maximum size in bytes of the Metal ray-tracing payload blob in
+        // slang_RTContext (default 64). Part of the cross-stage ABI: every
+        // module linked into one pipeline must use the same value.
+        // CLI: -metal-rt-max-payload-size <bytes>.
+        MetalRTMaxPayloadSize = 159,
+
         // Do not assign an explicit value to CountOf. It must remain one past the last option,
         // which it derives implicitly from the preceding (highest-valued) enumerator.
         CountOf,

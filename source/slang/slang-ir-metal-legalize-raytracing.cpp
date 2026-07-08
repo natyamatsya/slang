@@ -17,7 +17,7 @@ namespace Slang
 // signature can serve every miss/closest-hit shader (real shader-binding-table
 // semantics). The sizes match DXR driver conventions; exceeding either blob
 // is a compile-time error.
-static const IRIntegerValue kMetalRTMaxPayloadSize = 64;
+static const IRIntegerValue kMetalRTDefaultMaxPayloadSize = 64;
 static const IRIntegerValue kMetalRTMaxAttributeSize = 32;
 
 // Fixed Metal buffer binding indices for the implicit system parameters that
@@ -81,6 +81,11 @@ struct MetalRayTracingLegalizationContext
     IRModule* module;
     TargetProgram* targetProgram;
     DiagnosticSink* sink;
+
+    // The payload blob size (docs/design/metal-raytracing.md section 4.1):
+    // the -metal-rt-max-payload-size option, or 64 bytes by default. Part
+    // of the cross-stage ABI; all modules of one pipeline must agree.
+    IRIntegerValue maxPayloadSize = kMetalRTDefaultMaxPayloadSize;
 
     // Set when the module contains anyhit or intersection entry points: the
     // ray-generation kernel then receives the `slang_rtIsect` intersection
@@ -367,7 +372,7 @@ static void ensureSharedTypes(MetalRayTracingLegalizationContext& context)
         "payload",
         builder.getArrayType(
             byteType,
-            builder.getIntValue(builder.getIntType(), kMetalRTMaxPayloadSize)));
+            builder.getIntValue(builder.getIntType(), context.maxPayloadSize)));
     context.launchIndexKey = addField(ctxType, "launchIndex", uint3Type);
     context.launchDimKey = addField(ctxType, "launchDim", uint3Type);
 
@@ -487,13 +492,13 @@ static IRInst* emitTypedPayloadBlobAddr(
             payloadType,
             &sizeAndAlignment)))
     {
-        if (sizeAndAlignment.size > kMetalRTMaxPayloadSize &&
+        if (sizeAndAlignment.size > context.maxPayloadSize &&
             context.diagnosedOversizePayloadTypes.add(payloadType))
         {
             context.sink->diagnose(Diagnostics::MetalRaytracingPayloadTooLarge{
                 .payloadType = payloadType,
                 .payloadSize = String(sizeAndAlignment.size),
-                .maxSize = String(kMetalRTMaxPayloadSize),
+                .maxSize = String(context.maxPayloadSize),
                 .location = getDiagnosticPos(diagnosticInst)});
         }
     }
@@ -1686,6 +1691,9 @@ void legalizeMetalRayTracing(
     context.module = module;
     context.targetProgram = targetProgram;
     context.sink = sink;
+    if (auto optionSize = targetProgram->getOptionSet().getIntOption(
+            CompilerOptionName::MetalRTMaxPayloadSize))
+        context.maxPayloadSize = optionSize;
 
     // Partition the ray-tracing entry points by stage, diagnosing the stages
     // that later phases of docs/design/metal-raytracing.md will add.
