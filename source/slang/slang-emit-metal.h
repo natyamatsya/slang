@@ -136,6 +136,7 @@ protected:
     static const char* kMetalBuiltinPreludeLogging;
     static const char* kMetalBuiltinPreludeRTForwardDecls;
     static const char* kMetalBuiltinPreludeRTTrace;
+    static const char* kMetalBuiltinPreludeRTTraceWS;
 };
 
 } // namespace Slang

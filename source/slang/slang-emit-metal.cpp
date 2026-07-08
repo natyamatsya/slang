@@ -5,6 +5,7 @@
 #include "core/slang-writer.h"
 #include "slang-emit-source-writer.h"
 #include "slang-ir-entry-point-decorations.h"
+#include "slang-ir-metal-legalize-raytracing.h"
 #include "slang-ir-util.h"
 #include "slang-rich-diagnostics.h"
 
@@ -215,6 +216,23 @@ void MetalSourceEmitter::emitParameterGroupImpl(
     _emitHLSLParameterGroup(varDecl, type);
 }
 
+/// Did legalizeMetalRayTracing give this intersection function the
+/// instance-transform parameters? Their presence is what requires the
+/// `world_space_data` tag on the `[[intersection(...)]]` attribute
+/// (pay-for-use; the tag set must match the table's and the intersector's).
+static bool funcHasWorldSpaceDataParams(IRFunc* irFunc)
+{
+    for (auto param = irFunc->getFirstParam(); param; param = param->getNextParam())
+    {
+        if (auto sysVal = param->findDecoration<IRTargetSystemValueDecoration>())
+        {
+            if (sysVal->getSemantic() == kMetalRTObjectToWorldTransformAttr)
+                return true;
+        }
+    }
+    return false;
+}
+
 void MetalSourceEmitter::emitEntryPointAttributesImpl(
     IRFunc* irFunc,
     IREntryPointDecoration* entryPointDecor)
@@ -278,14 +296,22 @@ void MetalSourceEmitter::emitEntryPointAttributesImpl(
     // intersection function table. The tags must match the intersector's
     // (`_slang_rtTrace` in the prelude uses the same pair).
     case Stage::AnyHit:
-        m_writer->emit(
-            "[[intersection(triangle, raytracing::triangle_data, raytracing::instancing, "
-            "raytracing::world_space_data)]] ");
-        break;
     case Stage::Intersection:
-        m_writer->emit(
-            "[[intersection(bounding_box, raytracing::triangle_data, raytracing::instancing, "
-            "raytracing::world_space_data)]] ");
+        {
+            // world_space_data is present exactly when the legalizer added
+            // transform parameters to this function's signature
+            // (pay-for-use); the tag set must match the table's and the
+            // intersector's.
+            m_writer->emit(
+                stage == Stage::AnyHit
+                    ? "[[intersection(triangle, raytracing::triangle_data, "
+                      "raytracing::instancing"
+                    : "[[intersection(bounding_box, raytracing::triangle_data, "
+                      "raytracing::instancing");
+            if (funcHasWorldSpaceDataParams(irFunc))
+                m_writer->emit(", raytracing::world_space_data");
+            m_writer->emit(")]] ");
+        }
         break;
     default:
         SLANG_ABORT_COMPILATION("unsupported stage.");
@@ -762,14 +788,23 @@ bool MetalSourceEmitter::tryEmitInstExprImpl(IRInst* inst, const EmitOpInfo& inO
             // type.
             auto intersect = cast<IRMetalRTIntersect>(inst);
             ensurePrelude(kMetalBuiltinPreludeRTTrace);
-            m_writer->emit("_slang_rtTrace(");
+            bool worldSpaceData = getIntVal(intersect->getWorldSpaceData()) != 0;
+            if (worldSpaceData)
+            {
+                ensurePrelude(kMetalBuiltinPreludeRTTraceWS);
+                m_writer->emit("_slang_rtTraceWS(");
+            }
+            else
+            {
+                m_writer->emit("_slang_rtTrace(");
+            }
             emitOperand(intersect->getCtxPtr(), getInfo(EmitOp::General));
             m_writer->emit(", ");
             emitOperand(intersect->getAccelerationStructure(), getInfo(EmitOp::General));
-            if (intersect->getOperandCount() > 4)
+            if (intersect->getOperandCount() > 5)
             {
                 m_writer->emit(", ");
-                emitOperand(intersect->getOperand(4), getInfo(EmitOp::General));
+                emitOperand(intersect->getOperand(5), getInfo(EmitOp::General));
             }
             m_writer->emit(", ");
             emitOperand(intersect->getInstanceInclusionMask(), getInfo(EmitOp::General));
@@ -1471,11 +1506,22 @@ void MetalSourceEmitter::emitSimpleTypeImpl(IRType* type)
         }
     case kIROp_MetalIntersectionFunctionTableType:
         {
-            // The tag pair must match the intersector in the `_slang_rtTrace`
-            // prelude and the `[[intersection(...)]]` attributes of the
-            // emitted anyhit/intersection functions.
-            m_writer->emit("raytracing::intersection_function_table<raytracing::triangle_data, "
-                           "raytracing::instancing, raytracing::world_space_data>");
+            // The tag set must match the intersector in the trace prelude
+            // and the `[[intersection(...)]]` attributes of the emitted
+            // anyhit/intersection functions; an operand marks the
+            // world_space_data variant.
+            if (type->getOperandCount() > 0)
+            {
+                m_writer->emit(
+                    "raytracing::intersection_function_table<raytracing::triangle_data, "
+                    "raytracing::instancing, raytracing::world_space_data>");
+            }
+            else
+            {
+                m_writer->emit(
+                    "raytracing::intersection_function_table<raytracing::triangle_data, "
+                    "raytracing::instancing>");
+            }
             return;
         }
     case kIROp_MetalVisibleFunctionTableType:

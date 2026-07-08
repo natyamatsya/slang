@@ -586,11 +586,17 @@ with this option's usage in stage-per-envelope build systems.
 ### Transforms phase (`world_space_data`)
 
 `ObjectToWorld3x4/4x3`, `WorldToObject3x4/4x3`, and
-`ObjectRayOrigin/Direction` are now supported. The `world_space_data` tag
-is added — always on — to the intersection-function attributes, the
-intersection-function-table type, and the trace helper's intersector (an
-ABI text revision: the tag sets must agree everywhere; runtime binding
-APIs are unchanged, but an on-device revalidation pass is advised).
+`ObjectRayOrigin/Direction` are now supported, **pay-for-use**: the
+`world_space_data` tag (on the intersection-function attributes, the
+intersection-function-table type, and the trace helper's intersector),
+the transform context fields (~128 bytes of per-thread state), and the
+commit-time transform stores exist only when the module uses one of these
+intrinsics — or when `-metal-rt-force-world-space-data` is given, the
+separate-compilation escape hatch. Like the payload size, this is a
+cross-stage ABI setting: every module linked into one pipeline must agree
+(the tag sets and the context layout both depend on it). Runtime binding
+APIs are unchanged either way; an on-device revalidation pass is advised
+for pipelines that enable it.
 Inside anyhit/intersection functions the values come from the candidate's
 own tagged parameters (`[[object_to_world_transform]]`,
 `[[world_to_object_transform]]`, and the object-space

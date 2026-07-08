@@ -903,6 +903,13 @@ void initCommandOptions(CommandOptions& options)
          "-metal-rt-max-payload-size <bytes>",
          "Maximum size in bytes of the Metal ray-tracing payload blob (default 64). Part of "
          "the cross-stage ABI: every module linked into one pipeline must use the same value."},
+        {OptionKind::MetalRTForceWorldSpaceData,
+         "-metal-rt-force-world-space-data",
+         nullptr,
+         "For the Metal ray-tracing pipeline: enable the world_space_data support (instance "
+         "transforms and the object-space ray) even when this module uses none of the "
+         "corresponding intrinsics, so separately compiled modules agree on the context layout "
+         "and intersection tag sets."},
         {OptionKind::MetalRTForceIsectTable,
          "-metal-rt-force-isect-table",
          nullptr,
@@ -2814,6 +2821,7 @@ SlangResult OptionsParser::_parse(int argc, char const* const* argv)
         case OptionKind::VulkanUseEntryPointName:
         case OptionKind::VulkanUseGLLayout:
         case OptionKind::MetalRTForceIsectTable:
+        case OptionKind::MetalRTForceWorldSpaceData:
         case OptionKind::VulkanEmitReflection:
         case OptionKind::IgnoreCapabilities:
         case OptionKind::RestrictiveCapabilityCheck:

@@ -1754,12 +1754,14 @@ local insts = {
 		},
 	},
 	-- Run the traversal half of one `TraceRay`: the emitter prints a call to
-	-- the `_slang_rtTrace` prelude helper, which drives
+	-- the `_slang_rtTrace`/`_slang_rtTraceWS` prelude helper, which drives
 	-- `intersector<>::intersect()` and fills the committed-hit fields of the
 	-- `slang_RTContext` that `ctxPtr` points to. Returns the committed
-	-- intersection type (0 = none, 1 = triangle, 2 = bounding box). An
-	-- optional fifth operand supplies the `slang_rtIsect` intersection
-	-- function table when the program links anyhit/intersection stages.
+	-- intersection type (0 = none, 1 = triangle, 2 = bounding box).
+	-- `worldSpaceData` (an int literal) selects the world_space_data
+	-- variant; an optional sixth operand supplies the `slang_rtIsect`
+	-- intersection function table when the program links
+	-- anyhit/intersection stages.
 	{
 		metalRTIntersect = {
 			operands = {
@@ -1767,6 +1769,7 @@ local insts = {
 				{ "accelerationStructure" },
 				{ "instanceInclusionMask" },
 				{ "rayFlags" },
+				{ "worldSpaceData" },
 			},
 		},
 	},
