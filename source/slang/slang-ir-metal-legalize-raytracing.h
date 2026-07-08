@@ -29,6 +29,12 @@ bool isMetalRayTracingHandlerStage(Stage stage);
 inline const char* const kMetalRTObjectToWorldTransformAttr = "object_to_world_transform";
 inline const char* const kMetalRTWorldToObjectTransformAttr = "world_to_object_transform";
 
+/// The name hint the front end gives the element struct of the implicit
+/// global constant buffer it aggregates loose uniforms into. The Metal
+/// ray-tracing legalizer identifies that buffer by this name for the ABI
+/// descriptor and the slots-mode `uniforms` header entry.
+inline const char* const kMetalRTImplicitUniformsStructName = "GlobalParams";
+
 /// Rewrite ray-tracing pipeline entry points and the transient `kIROp_MetalRT*`
 /// instructions into the Metal execution model specified by
 /// docs/design/metal-raytracing.md.
