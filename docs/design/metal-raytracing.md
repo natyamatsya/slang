@@ -1,9 +1,9 @@
 # Metal Ray-Tracing Pipeline Stages — Implementation Specification
 
-Status: **P0 + P1 + P2 + P3 implemented** (all six stages; `TraceRay` and
-`CallShader` from raygen *and* from miss/closesthit/callable via the
-`slang_RTGlobals` argument buffer; on-device validation of the recursion
-path pending — see §10 and §11)
+Status: **P0-P4 implemented** (all six stages; dispatch from raygen and
+miss/closesthit/callable; full traversal ray-flag mapping; on-device
+validation of the recursion path pending; `ObjectToWorld`/`WorldToObject`
+and `ObjectRay*` remain open — see §10 and §11)
 Target: `-target metal` support for the six ray-tracing pipeline stages
 (`raygeneration`, `miss`, `closesthit`, `anyhit`, `intersection`, `callable`).
 
@@ -529,6 +529,28 @@ P3 lands both halves of §5.3 at once, because they are the same mechanism:
   §11 question 1, with the megakernel fallback unchanged if it fails. Set
   `maxCallStackDepth` on the pipeline descriptor according to the shader's
   recursion depth.
+
+### P4 implementation notes (completeness)
+
+- **Full traversal flag mapping**: `_slang_rtTraceConfigure` now also maps
+  RAY_FLAG_CULL_BACK/FRONT_FACING_TRIANGLES to the intersector's triangle
+  cull mode, and RAY_FLAG_SKIP_CLOSEST_HIT_SHADER suppresses the
+  closest-hit dispatch in the trace lowering (traversal and the
+  committed-hit state, including RayTCurrent at the trace site, are
+  unaffected; the miss path still dispatches).
+- **World- vs object-space fix**: Metal's `[[origin]]`/`[[direction]]`
+  parameters are the *object-space* ray inside anyhit/intersection
+  functions, so `WorldRayOrigin()`/`WorldRayDirection()` there now read the
+  world-space context fields the trace dispatch stored (identity-transform
+  scenes never noticed the difference). The object-space parameters remain
+  in the signatures, reserved for `ObjectRayOrigin()`/`ObjectRayDirection()`
+  support.
+- **Still open** (needs the `world_space_data` intersector tag or a
+  runtime-provided per-instance transform buffer, which changes the tag
+  sets everywhere and the on-device-validated ABI):
+  `ObjectToWorld*`/`WorldToObject*`, `ObjectRayOrigin/Direction`, all
+  diagnosed via their missing `metal` requires. Multi-dimension launches
+  need no compiler work (the launch grid is already 3D).
 
 ## 11. Open questions
 

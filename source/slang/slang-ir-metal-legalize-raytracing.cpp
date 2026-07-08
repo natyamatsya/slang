@@ -931,6 +931,14 @@ static void addIntersectionFunctionCommonParams(
     auto uintType = builder.getUIntType();
     auto float3Type = builder.getVectorType(builder.getBasicType(BaseType::Float), 3);
 
+    // Note that Metal's `[[origin]]`/`[[direction]]` are the OBJECT-space
+    // ray inside intersection functions; `WorldRayOrigin()`/`WorldRayDirection()`
+    // therefore read the world-space context fields the trace dispatch
+    // stored (no override), and these parameters are reserved for future
+    // `ObjectRayOrigin()`/`ObjectRayDirection()` support.
+    addSystemParam(builder, func, float3Type, "slang_rtObjOrigin", String("origin"));
+    addSystemParam(builder, func, float3Type, "slang_rtObjDirection", String("direction"));
+
     const struct
     {
         IROp readerOp;
@@ -938,8 +946,6 @@ static void addIntersectionFunctionCommonParams(
         const char* name;
         const char* metalAttribute;
     } commonParams[] = {
-        {kIROp_MetalRTWorldRayOrigin, float3Type, "slang_rtOrigin", "origin"},
-        {kIROp_MetalRTWorldRayDirection, float3Type, "slang_rtDirection", "direction"},
         {kIROp_MetalRTPrimitiveIndex, uintType, "slang_rtPrimitiveIndex", "primitive_id"},
         {kIROp_MetalRTInstanceIndex, uintType, "slang_rtInstanceIndex", "instance_id"},
         {kIROp_MetalRTInstanceID, uintType, "slang_rtInstanceID", "user_instance_id"},
@@ -1369,7 +1375,21 @@ static void lowerTraceRayOp(
                 .emitMul(uintType, inst->getMultiplierForGeometryContribution(), geometryIndex));
         recordIndex = builder.emitAdd(uintType, recordIndex, instanceContribution);
 
+        // DXR RAY_FLAG_SKIP_CLOSEST_HIT_SHADER (0x08) suppresses only the
+        // closest-hit dispatch; traversal and the committed-hit state are
+        // unaffected, and the miss path still dispatches.
+        IRInst* maskArgs[] = {inst->getRayFlags(), builder.getIntValue(uintType, 0x08)};
+        auto skipBits = builder.emitIntrinsicInst(uintType, kIROp_BitAnd, 2, maskArgs);
+        IRInst* eqlArgs[] = {skipBits, builder.getIntValue(uintType, 0)};
+        auto shouldDispatch =
+            builder.emitIntrinsicInst(builder.getBoolType(), kIROp_Eql, 2, eqlArgs);
+        IRBlock* dispatchBlock = nullptr;
+        IRBlock* skipBlock = nullptr;
+        builder.emitIfWithBlocks(shouldDispatch, dispatchBlock, skipBlock);
+        builder.setInsertInto(dispatchBlock);
         emitHandlerTableCall(builder, entryInfo, recordIndex);
+        builder.emitBranch(skipBlock);
+        builder.setInsertInto(skipBlock);
         builder.emitBranch(mergeBlock);
     }
 
