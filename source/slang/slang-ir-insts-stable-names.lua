@@ -900,5 +900,6 @@ return {
 	["metalRTIgnoreHit"] = 924,
 	["metalRTAcceptHitAndEndSearch"] = 925,
 	["metalRTIntersect"] = 926,
-	["Type.MetalIntersectionFunctionTable"] = 927
+	["Type.MetalIntersectionFunctionTable"] = 927,
+	["metalRTCallShader"] = 928
 }

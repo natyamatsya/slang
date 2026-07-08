@@ -117,9 +117,10 @@ struct MetalRayTracingLegalizationContext
     IRStructKey* launchIndexKey = nullptr;
     IRStructKey* launchDimKey = nullptr;
 
-    // Field keys of `slang_RTSbt` that the trace lowering reads.
+    // Field keys of `slang_RTSbt` that the dispatch lowerings read.
     IRStructKey* missBaseKey = nullptr;
     IRStructKey* hitBaseKey = nullptr;
+    IRStructKey* callableBaseKey = nullptr;
     IRStructKey* instanceSbtOffsetsKey = nullptr;
 
     // Per-entry-point access paths to the ABI values: the context pointer is
@@ -180,6 +181,7 @@ static bool isMetalRTOp(IRInst* inst)
         SLANG_METAL_RT_SYSTEM_VALUE_OPS(CASE)
 #undef CASE
     case kIROp_MetalRTTraceRay:
+    case kIROp_MetalRTCallShader:
     case kIROp_MetalRTReportHit:
     case kIROp_MetalRTIgnoreHit:
     case kIROp_MetalRTAcceptHitAndEndSearch:
@@ -341,13 +343,13 @@ static void ensureSharedTypes(MetalRayTracingLegalizationContext& context)
     // base indices into the visible function table plus the per-instance
     // contribution (DXR's InstanceContributionToHitGroupIndex), which Metal's
     // instance descriptor cannot carry for the visible table. The
-    // `callableBase` and `hitStride` fields are part of the ABI but have no
-    // compiler-side reader until callable shaders (phase P2) land.
+    // `hitStride` field is part of the ABI but has no compiler-side reader
+    // yet (the hit-group multiplier arrives as a TraceRay argument).
     auto sbtType = builder.createStructType();
     pinName(sbtType, "slang_RTSbt");
     context.missBaseKey = addField(sbtType, "missBase", uintType);
     context.hitBaseKey = addField(sbtType, "hitBase", uintType);
-    addField(sbtType, "callableBase", uintType);
+    context.callableBaseKey = addField(sbtType, "callableBase", uintType);
     addField(sbtType, "hitStride", uintType);
     context.instanceSbtOffsetsKey = addField(
         sbtType,
@@ -1091,6 +1093,35 @@ static void storeContextField(IRBuilder& builder, IRInst* ctxPtr, IRStructKey* k
     builder.emitStore(builder.emitFieldAddress(ctxPtr, key), value);
 }
 
+/// Pack the caller's payload (pointed to by `payloadPtr`) into the context's
+/// payload blob ahead of a handler dispatch, returning the typed blob
+/// address the caller passes to `emitPayloadBlobUnpack` after the dispatch.
+static IRInst* emitPayloadBlobPack(
+    MetalRayTracingLegalizationContext& context,
+    IRBuilder& builder,
+    IRInst* ctxPtr,
+    IRInst* payloadPtr,
+    IRInst* diagnosticInst)
+{
+    auto payloadType = (IRType*)as<IRPtrTypeBase>(payloadPtr->getDataType())->getValueType();
+    auto typedBlobAddr = emitTypedPayloadBlobAddr(
+        context,
+        builder,
+        ctxPtr,
+        payloadType,
+        AddressSpace::ThreadLocal,
+        diagnosticInst);
+    builder.emitStore(typedBlobAddr, builder.emitLoad(payloadPtr));
+    return typedBlobAddr;
+}
+
+/// Unpack the context's payload blob back into the caller's payload after a
+/// handler dispatch, so the caller observes the handler's writes.
+static void emitPayloadBlobUnpack(IRBuilder& builder, IRInst* typedBlobAddr, IRInst* payloadPtr)
+{
+    builder.emitStore(payloadPtr, builder.emitLoad(typedBlobAddr));
+}
+
 /// Call the visible-function-table record `recordIndex` with the entry's
 /// context and globals pointers — the dispatch primitive shared by the
 /// TraceRay hit/miss paths (and, once phase P2 lands, CallShader).
@@ -1164,15 +1195,7 @@ static void lowerTraceRayOp(
     storeContextField(builder, ctxPtr, context.rayFlagsKey, inst->getRayFlags());
 
     auto payloadPtr = inst->getPayloadPtr();
-    auto payloadType = (IRType*)as<IRPtrTypeBase>(payloadPtr->getDataType())->getValueType();
-    auto typedBlobAddr = emitTypedPayloadBlobAddr(
-        context,
-        builder,
-        ctxPtr,
-        payloadType,
-        AddressSpace::ThreadLocal,
-        inst);
-    builder.emitStore(typedBlobAddr, builder.emitLoad(payloadPtr));
+    auto typedBlobAddr = emitPayloadBlobPack(context, builder, ctxPtr, payloadPtr, inst);
 
     IRInst* status = nullptr;
     if (entryInfo.isectTable)
@@ -1247,7 +1270,33 @@ static void lowerTraceRayOp(
     // the payload there so the caller observes the handler's writes.
     moveTailIntoBlock(inst, mergeBlock);
     builder.setInsertBefore(inst);
-    builder.emitStore(payloadPtr, builder.emitLoad(typedBlobAddr));
+    emitPayloadBlobUnpack(builder, typedBlobAddr, payloadPtr);
+    inst->removeAndDeallocate();
+}
+
+/// Lower a `metalRTCallShader` op inside a ray-generation kernel into the
+/// section 5.2 dispatch: pack the callable data into the context's payload
+/// blob, call the record `callableBase + shaderIndex` through the visible
+/// function table, and unpack the blob back.
+static void lowerCallShaderOp(
+    MetalRayTracingLegalizationContext& context,
+    MetalRayTracingLegalizationContext::RTEntryInfo& entryInfo,
+    IRMetalRTCallShader* inst)
+{
+    IRBuilder builder(context.module);
+    builder.setInsertBefore(inst);
+
+    auto uintType = builder.getUIntType();
+
+    auto payloadPtr = inst->getPayloadPtr();
+    auto typedBlobAddr = emitPayloadBlobPack(context, builder, entryInfo.ctxPtr, payloadPtr, inst);
+
+    auto callableBase =
+        builder.emitLoad(builder.emitFieldAddress(entryInfo.sbtPtr, context.callableBaseKey));
+    auto recordIndex = builder.emitAdd(uintType, callableBase, inst->getShaderIndex());
+    emitHandlerTableCall(builder, entryInfo, recordIndex);
+
+    emitPayloadBlobUnpack(builder, typedBlobAddr, payloadPtr);
     inst->removeAndDeallocate();
 }
 
@@ -1329,11 +1378,13 @@ static void lowerMetalRTOpsInFunc(
         switch (inst->getOp())
         {
         case kIROp_MetalRTTraceRay:
+        case kIROp_MetalRTCallShader:
             {
-                // Tracing needs the table/SBT system parameters, which only
-                // the ray-generation kernel receives; a trace reaching any
-                // other stage (e.g. recursion from a closest-hit shader) is
-                // not supported yet (phase P3 of the design doc).
+                // Dispatching needs the table/SBT system parameters, which
+                // only the ray-generation kernel receives; a TraceRay or
+                // CallShader reaching any other stage (e.g. recursion from a
+                // closest-hit shader) is not supported yet (phase P3 of the
+                // design doc).
                 if (entryInfo.stage != Stage::RayGeneration)
                 {
                     context.sink->diagnose(Diagnostics::MetalRaytracingTraceOutsideRaygen{
@@ -1341,7 +1392,10 @@ static void lowerMetalRTOpsInFunc(
                     inst->removeAndDeallocate();
                     continue;
                 }
-                lowerTraceRayOp(context, entryInfo, cast<IRMetalRTTraceRay>(inst));
+                if (auto callShader = as<IRMetalRTCallShader>(inst))
+                    lowerCallShaderOp(context, entryInfo, callShader);
+                else
+                    lowerTraceRayOp(context, entryInfo, cast<IRMetalRTTraceRay>(inst));
             }
             break;
         case kIROp_MetalRTReportHit:
@@ -1464,6 +1518,11 @@ void legalizeMetalRayTracing(
             break;
         case Stage::Miss:
         case Stage::ClosestHit:
+        // A callable shader has the same shape as a miss shader from the
+        // execution model's point of view: one inout data parameter bridged
+        // through the context's payload blob, dispatched through the
+        // visible function table (from its own SBT region).
+        case Stage::Callable:
             anyRTEntryPoints = true;
             handlerEntryPoints.add(entryPoint);
             break;
@@ -1474,12 +1533,6 @@ void legalizeMetalRayTracing(
         case Stage::Intersection:
             anyRTEntryPoints = true;
             intersectionEntryPoints.add(entryPoint);
-            break;
-        case Stage::Callable:
-            anyRTEntryPoints = true;
-            sink->diagnose(Diagnostics::MetalRaytracingStageNotSupported{
-                .stageName = String(getStageName(stage)),
-                .location = getDiagnosticPos(entryPoint.entryPointFunc)});
             break;
         default:
             break;
