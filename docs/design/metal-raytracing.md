@@ -1,8 +1,8 @@
 # Metal Ray-Tracing Pipeline Stages — Implementation Specification
 
-Status: **P0 + P1 implemented** (raygen + miss + closesthit + anyhit +
-intersection, `TraceRay` from raygen; see §10 for the implementation notes
-and the exact places where the implementation deviates from the text below)
+Status: **P0 + P1 + P2 implemented** (all six stages; `TraceRay` and
+`CallShader` from raygen; see §10 for the implementation notes and the
+exact places where the implementation deviates from the text below)
 Target: `-target metal` support for the six ray-tracing pipeline stages
 (`raygeneration`, `miss`, `closesthit`, `anyhit`, `intersection`, `callable`).
 
@@ -465,6 +465,27 @@ P1 replaced the P0 traversal and added the intersection-function stages:
   struct declarations (and the prelude template can address context fields
   by name).
 - E56110 now rejects only `callable` (phase P2).
+
+### P2 implementation notes (callables)
+
+- A callable shader is, from the execution model's point of view, a miss
+  shader with user-chosen data: it is rewritten to the same uniform
+  `[[visible]]` handler signature, its `inout` data parameter bridged
+  through the context's payload blob, and it occupies records in the same
+  visible function table (from the `callableBase` region of `slang_RTSbt`).
+- `CallShader(index, data)` lowers (in the ray-generation kernel) to: pack
+  `data` into the payload blob, call record `callableBase + index` through
+  `slang_rtHandlers`, unpack the blob back. The 64-byte payload size limit
+  applies to callable data as well (§4.2).
+- `CallShader` from a miss/closest-hit/callable shader is diagnosed
+  (E56111) for the same reason as `TraceRay` recursion: handler stages do
+  not receive the table/SBT system parameters until the phase-P3 mechanism
+  (threading them through `slang_RTGlobals`) exists. Note that a
+  `CallShader` between two `TraceRay`s in raygen reuses the same payload
+  blob, which is safe because each dispatch packs before and unpacks after
+  the call.
+- With all six stages supported, the `metal-raytracing-stage-not-supported`
+  diagnostic (E56110) was retired.
 
 ## 11. Open questions
 

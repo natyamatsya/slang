@@ -20939,7 +20939,7 @@ int __callablePayloadLocation(__ref Payload payload);
 /// @remarks Used to implement dynamic shader calls during ray tracing
 /// @category raytracing
 __generic<Payload>
-[require(cuda_glsl_hlsl_spirv, raytracing_raygen_closesthit_miss_callable)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_raygen_closesthit_miss_callable)]
 // A target-agnostic identity so IR passes recognize a `CallShader` call regardless of the
 // `__target_switch` arm selected, without depending on the intrinsic's emitted spelling.
 [KnownBuiltin($( (int)KnownBuiltinDeclName::CallShader))]
@@ -20974,6 +20974,13 @@ void CallShader(uint shaderIndex, inout Payload payload)
             };
             payload = p;
         }
+    case metal:
+        // Lowered by `legalizeMetalRayTracing` into a call through the
+        // `slang_rtHandlers` visible function table at record
+        // `slang_rtSbt.callableBase + shaderIndex`, with the callable data
+        // bridged through the context's payload blob. See
+        // docs/design/metal-raytracing.md, section 5.2.
+        __metalRTCallShader(shaderIndex, payload);
     }
 }
 
@@ -21080,6 +21087,10 @@ void __metalRTIgnoreHit();
 
 __intrinsic_op($(kIROp_MetalRTAcceptHitAndEndSearch))
 void __metalRTAcceptHitAndEndSearch();
+
+__generic<payload_t>
+__intrinsic_op($(kIROp_MetalRTCallShader))
+void __metalRTCallShader(uint shaderIndex, inout payload_t payload);
 
 /// Traces a ray through the acceleration structure.
 /// @param AccelerationStructure The acceleration structure to traverse
