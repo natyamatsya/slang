@@ -1,9 +1,7 @@
 //DIAGNOSTIC_TEST:SIMPLE(filecheck=CHECK): -target metal
 
-// Features beyond the implemented phases of docs/design/metal-raytracing.md
-// (module-scope mutable state in handler stages, global resource access
-// from anyhit/intersection functions, out-of-contract attribute types) must
-// fail loudly until implemented.
+// Out-of-contract input (module-scope mutable state in handler stages,
+// out-of-contract attribute types) must fail loudly.
 
 StructuredBuffer<float4> missColors;
 
@@ -22,16 +20,6 @@ void missGlobalVar(inout RayPayload payload)
 {
     gAccum += 1.0;
     payload.color = float4(gAccum, 0, 0, 1);
-}
-
-// Global resource access from anyhit/intersection functions is not wired
-// up yet (they have no slang_RTGlobals parameter until the
-// intersection-table buffer binding lands):
-//CHECK-DAG: 56113
-[shader("anyhit")]
-void anyHitGlobal(inout RayPayload payload, in BuiltInTriangleIntersectionAttributes attr)
-{
-    payload.color = missColors[0] + float4(attr.barycentrics, 0, 0);
 }
 
 // Intersection attributes must be a struct (the built-in triangle shape or
