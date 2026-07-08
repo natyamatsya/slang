@@ -1682,8 +1682,10 @@ void legalizeMetalRayTracing(
     if (!anyRTEntryPoints)
         return;
 
-    context.hasIntersectionStages =
-        anyHitEntryPoints.getCount() != 0 || intersectionEntryPoints.getCount() != 0;
+    context.hasIntersectionStages = anyHitEntryPoints.getCount() != 0 ||
+                                    intersectionEntryPoints.getCount() != 0 ||
+                                    targetProgram->getOptionSet().getBoolOption(
+                                        CompilerOptionName::MetalRTForceIsectTable);
 
     // The raygen kernel's system parameters live at fixed buffer indices;
     // user bindings must stay below them. The intersection function table
