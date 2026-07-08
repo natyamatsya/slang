@@ -1,9 +1,10 @@
 # Metal Ray-Tracing Pipeline Stages — Implementation Specification
 
-Status: **P0-P4 implemented** (all six stages; dispatch from raygen and
-miss/closesthit/callable; full traversal ray-flag mapping; on-device
-validation of the recursion path pending; `ObjectToWorld`/`WorldToObject`
-and `ObjectRay*` remain open — see §10 and §11)
+Status: **P0-P4 implemented, every phase validated on-device** (all six
+stages, recursion, callables, the globals argument buffer, full traversal
+flag mapping, transform-correct ray spaces — Apple M2 Max, exact-value
+proofs; `ObjectToWorld`/`WorldToObject` and `ObjectRay*` remain open
+behind capability errors — see §10 and §11)
 Target: `-target metal` support for the six ray-tracing pipeline stages
 (`raygeneration`, `miss`, `closesthit`, `anyhit`, `intersection`, `callable`).
 
@@ -466,6 +467,13 @@ P1 replaced the P0 traversal and added the intersection-function stages:
   struct declarations (and the prelude template can address context fields
   by name).
 - E56110 now rejects only `callable` (phase P2).
+- The §4.5 sketch shows intersection functions receiving a
+  `device slang_RTGlobals*` argument via the intersection-table buffer
+  binding; the implementation does not emit that parameter — global access
+  from anyhit/intersection functions is diagnosed instead (E56113). The
+  mechanism (buffer arguments on intersection functions, bound through
+  `MTLIntersectionFunctionTable.setBuffer`) is verified to compile and
+  remains the plan for lifting the restriction.
 
 ### P2 implementation notes (callables)
 
@@ -529,6 +537,22 @@ P3 lands both halves of §5.3 at once, because they are the same mechanism:
   §11 question 1, with the megakernel fallback unchanged if it fails. Set
   `maxCallStackDepth` on the pipeline descriptor according to the shader's
   recursion depth.
+
+### MSL compliance
+
+A header-and-probe audit against the Metal toolchain (Metal 32023,
+`metal_raytracing` / `metal_visible_function_table`) found every emitted
+construct legal at exactly the claimed `metallib_2_4` floor: all samples
+compile at `macos-metal2.4` and fail at 2.3 (the `acceleration_structure`
+template alias and `user_instance_id` are the 2.4 gates). Verified along
+the way: every parameter tag we emit is covered by our declared
+`(triangle_data, instancing)` function tags; `[[world_space_origin]]` /
+`[[world_space_direction]]` exist behind the `world_space_data` tag (the
+path for future `WorldRay*`-as-tags and the transform matrices); the
+`[[payload]]`-must-be-reference rule and `ray_data` reinterpret casts are
+confirmed; bounding-box result structs match the required member-attribute
+shape (names/order free); and `buffer(30)` is the last legal slot of
+Metal's buffer table.
 
 ### Separately compiled stages: `-metal-rt-force-isect-table`
 
