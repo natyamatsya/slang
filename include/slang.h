@@ -1376,7 +1376,15 @@ typedef uint32_t SlangSizeT;
         // slang_RTContext (default 64). Part of the cross-stage ABI: every
         // module linked into one pipeline must use the same value.
         // CLI: -metal-rt-max-payload-size <bytes>.
+
         MetalRTMaxPayloadSize = 165,
+
+        // Force the Metal ray-tracing world_space_data support (instance
+        // transforms and the object-space ray in the context) even when no
+        // entry point in the module uses the corresponding intrinsics, so
+        // separately compiled modules agree on the context layout and the
+        // intersection tag sets. CLI: -metal-rt-force-world-space-data.
+        MetalRTForceWorldSpaceData = 166,
         // Do not assign an explicit value to CountOf. It must remain one past the last option,
         // which it derives implicitly from the preceding (highest-valued) enumerator.
         CountOf,

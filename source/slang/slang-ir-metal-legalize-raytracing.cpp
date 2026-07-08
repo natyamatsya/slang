@@ -53,7 +53,18 @@ static const int kMetalRTCommittedNone = 0;
 // serves both (matching DXR, where RayTCurrent in a miss shader equals
 // RayTMax).
 //
+// The transform/object-space-ray subset is split out so that the
+// pay-for-use detection shares the same op list; the context keys of this
+// subset are null when the module does not opt into world_space_data
+// support (their reader ops cannot appear in that case).
+//
 // clang-format off
+#define SLANG_METAL_RT_WS_SYSTEM_VALUE_OPS(M)       \
+    M(MetalRTObjectToWorld,          objectToWorldKey)      \
+    M(MetalRTWorldToObject,          worldToObjectKey)      \
+    M(MetalRTObjectRayOrigin,        objectRayOriginKey)    \
+    M(MetalRTObjectRayDirection,     objectRayDirectionKey)
+
 #define SLANG_METAL_RT_SYSTEM_VALUE_OPS(M)          \
     M(MetalRTDispatchRaysIndex,      launchIndexKey)    \
     M(MetalRTDispatchRaysDimensions, launchDimKey)      \
@@ -66,11 +77,8 @@ static const int kMetalRTCommittedNone = 0;
     M(MetalRTInstanceID,             instanceIDKey)     \
     M(MetalRTGeometryIndex,          geometryIndexKey)  \
     M(MetalRTPrimitiveIndex,         primitiveIndexKey) \
-    M(MetalRTHitKind,                hitKindKey)            \
-    M(MetalRTObjectToWorld,          objectToWorldKey)      \
-    M(MetalRTWorldToObject,          worldToObjectKey)      \
-    M(MetalRTObjectRayOrigin,        objectRayOriginKey)    \
-    M(MetalRTObjectRayDirection,     objectRayDirectionKey)
+    M(MetalRTHitKind,                hitKindKey)        \
+    SLANG_METAL_RT_WS_SYSTEM_VALUE_OPS(M)
 // clang-format on
 
 namespace
@@ -86,6 +94,13 @@ struct MetalRayTracingLegalizationContext
     // the -metal-rt-max-payload-size option, or 64 bytes by default. Part
     // of the cross-stage ABI; all modules of one pipeline must agree.
     IRIntegerValue maxPayloadSize = kMetalRTDefaultMaxPayloadSize;
+
+    // Set when the module uses any of the transform/object-space-ray
+    // intrinsics (or -metal-rt-force-world-space-data is given): gates the
+    // world_space_data tag on intersection functions/tables/intersector,
+    // the transform context fields, and the commit-time transform stores.
+    // Part of the cross-stage ABI: modules of one pipeline must agree.
+    bool usesWorldSpaceData = false;
 
     // Set when the module contains anyhit or intersection entry points: the
     // ray-generation kernel then receives the `slang_rtIsect` intersection
@@ -294,6 +309,18 @@ static void inlineMetalRTOpsIntoEntryPoints(IRModule* module)
     }
 }
 
+/// The `float4x3` type used for the Metal instance transforms (Metal
+/// float4x3 = 4 columns x 3 rows; the emitted spelling matches how the
+/// RayQuery path already exposes these).
+static IRType* getTransformMatrixType(IRBuilder& builder)
+{
+    return builder.getMatrixType(
+        builder.getBasicType(BaseType::Float),
+        builder.getIntValue(builder.getIntType(), 4),
+        builder.getIntValue(builder.getIntType(), 3),
+        builder.getIntValue(builder.getIntType(), SLANG_MATRIX_LAYOUT_ROW_MAJOR));
+}
+
 static void ensureSharedTypes(MetalRayTracingLegalizationContext& context)
 {
     if (context.ctxStructType)
@@ -348,19 +375,19 @@ static void ensureSharedTypes(MetalRayTracingLegalizationContext& context)
     context.primitiveIndexKey = addField(ctxType, "primitiveIndex", uintType);
     context.hitKindKey = addField(ctxType, "hitKind", uintType);
     context.triBarycentricsKey = addField(ctxType, "triBarycentrics", float2Type);
-    // Instance transforms and the object-space ray of the committed hit,
-    // filled by the trace helper from the world_space_data intersector
-    // results (Metal float4x3 = 4 columns x 3 rows; the emitted `float4x3`
-    // spelling matches how the RayQuery path already exposes these).
-    auto float4x3Type = builder.getMatrixType(
-        floatType,
-        builder.getIntValue(builder.getIntType(), 4),
-        builder.getIntValue(builder.getIntType(), 3),
-        builder.getIntValue(builder.getIntType(), SLANG_MATRIX_LAYOUT_ROW_MAJOR));
-    context.objectToWorldKey = addField(ctxType, "objectToWorld", float4x3Type);
-    context.worldToObjectKey = addField(ctxType, "worldToObject", float4x3Type);
-    context.objectRayOriginKey = addField(ctxType, "objectRayOrigin", float3Type);
-    context.objectRayDirectionKey = addField(ctxType, "objectRayDirection", float3Type);
+    if (context.usesWorldSpaceData)
+    {
+        // Instance transforms and the object-space ray of the committed
+        // hit, filled by the trace helper from the world_space_data
+        // intersector results. These cost ~128 bytes of per-thread context
+        // plus commit-time work, so they exist only when the module opts
+        // in.
+        auto float4x3Type = getTransformMatrixType(builder);
+        context.objectToWorldKey = addField(ctxType, "objectToWorld", float4x3Type);
+        context.worldToObjectKey = addField(ctxType, "worldToObject", float4x3Type);
+        context.objectRayOriginKey = addField(ctxType, "objectRayOrigin", float3Type);
+        context.objectRayDirectionKey = addField(ctxType, "objectRayDirection", float3Type);
+    }
     context.attributesKey = addField(
         ctxType,
         "attributes",
@@ -426,7 +453,20 @@ static void ensureSharedTypes(MetalRayTracingLegalizationContext& context)
     context.sbtPtrType = builder.getPtrType(sbtType, AddressSpace::Uniform);
 
     context.visibleTableType = (IRType*)builder.getType(kIROp_MetalVisibleFunctionTableType);
-    context.isectTableType = (IRType*)builder.getType(kIROp_MetalIntersectionFunctionTableType);
+    if (context.usesWorldSpaceData)
+    {
+        // The tag operand marks the world_space_data variant for the
+        // emitter; the tag sets of the table, the intersector, and the
+        // intersection functions must agree.
+        IRInst* wsOperand = builder.getIntValue(builder.getIntType(), 1);
+        context.isectTableType =
+            (IRType*)builder.getType(kIROp_MetalIntersectionFunctionTableType, 1, &wsOperand);
+    }
+    else
+    {
+        context.isectTableType =
+            (IRType*)builder.getType(kIROp_MetalIntersectionFunctionTableType);
+    }
 
     context.globalsHandlersKey = addField(globalsType, "handlers", context.visibleTableType);
     context.globalsIsectKey = addField(globalsType, "isect", context.isectTableType);
@@ -821,9 +861,12 @@ static void processHandlerEntryPoint(
     // in this handler reuses the context as its dispatch scratch space, so
     // later reads must not observe the nested state. Unused snapshots are
     // removed by DCE.
-#define CASE(OP, KEY)                        \
-    info.readerOverrides[kIROp_##OP] =       \
-        builder.emitLoad(builder.emitFieldAddress(ctxParam, context.KEY));
+// Transform-family keys are null when the module does not opt into
+// world_space_data; their reader ops cannot appear in that case.
+#define CASE(OP, KEY)                          \
+    if (context.KEY)                           \
+        info.readerOverrides[kIROp_##OP] =     \
+            builder.emitLoad(builder.emitFieldAddress(ctxParam, context.KEY));
     SLANG_METAL_RT_SYSTEM_VALUE_OPS(CASE)
 #undef CASE
 
@@ -970,25 +1013,26 @@ static void addIntersectionFunctionCommonParams(
     auto objDirectionParam =
         addSystemParam(builder, func, float3Type, "slang_rtObjDirection", String("direction"));
     info.readerOverrides[kIROp_MetalRTObjectRayDirection] = objDirectionParam;
-    auto float4x3Type = builder.getMatrixType(
-        builder.getBasicType(BaseType::Float),
-        builder.getIntValue(builder.getIntType(), 4),
-        builder.getIntValue(builder.getIntType(), 3),
-        builder.getIntValue(builder.getIntType(), SLANG_MATRIX_LAYOUT_ROW_MAJOR));
-    auto objectToWorldParam = addSystemParam(
-        builder,
-        func,
-        float4x3Type,
-        "slang_rtObjectToWorld",
-        String("object_to_world_transform"));
-    info.readerOverrides[kIROp_MetalRTObjectToWorld] = objectToWorldParam;
-    auto worldToObjectParam = addSystemParam(
-        builder,
-        func,
-        float4x3Type,
-        "slang_rtWorldToObject",
-        String("world_to_object_transform"));
-    info.readerOverrides[kIROp_MetalRTWorldToObject] = worldToObjectParam;
+    if (context.usesWorldSpaceData)
+    {
+        // The transform parameter tags require the world_space_data
+        // function tag, so they exist only when the module opts in.
+        auto float4x3Type = getTransformMatrixType(builder);
+        auto objectToWorldParam = addSystemParam(
+            builder,
+            func,
+            float4x3Type,
+            "slang_rtObjectToWorld",
+            String(kMetalRTObjectToWorldTransformAttr));
+        info.readerOverrides[kIROp_MetalRTObjectToWorld] = objectToWorldParam;
+        auto worldToObjectParam = addSystemParam(
+            builder,
+            func,
+            float4x3Type,
+            "slang_rtWorldToObject",
+            String(kMetalRTWorldToObjectTransformAttr));
+        info.readerOverrides[kIROp_MetalRTWorldToObject] = worldToObjectParam;
+    }
 
     const struct
     {
@@ -1374,6 +1418,9 @@ static void lowerTraceRayOp(
     auto typedBlobAddr = emitPayloadBlobPack(context, builder, ctxPtr, payloadPtr, inst);
 
     IRInst* status = nullptr;
+    auto wsFlag = builder.getIntValue(
+        builder.getIntType(),
+        context.usesWorldSpaceData ? 1 : 0);
     if (entryInfo.isectTable)
     {
         IRInst* intersectArgs[] = {
@@ -1381,8 +1428,9 @@ static void lowerTraceRayOp(
             inst->getAccelerationStructure(),
             inst->getInstanceInclusionMask(),
             inst->getRayFlags(),
+            wsFlag,
             entryInfo.isectTable};
-        status = builder.emitIntrinsicInst(uintType, kIROp_MetalRTIntersect, 5, intersectArgs);
+        status = builder.emitIntrinsicInst(uintType, kIROp_MetalRTIntersect, 6, intersectArgs);
     }
     else
     {
@@ -1390,8 +1438,9 @@ static void lowerTraceRayOp(
             ctxPtr,
             inst->getAccelerationStructure(),
             inst->getInstanceInclusionMask(),
-            inst->getRayFlags()};
-        status = builder.emitIntrinsicInst(uintType, kIROp_MetalRTIntersect, 4, intersectArgs);
+            inst->getRayFlags(),
+            wsFlag};
+        status = builder.emitIntrinsicInst(uintType, kIROp_MetalRTIntersect, 5, intersectArgs);
     }
 
     IRInst* neqArgs[] = {status, builder.getIntValue(uintType, kMetalRTCommittedNone)};
@@ -1681,6 +1730,33 @@ static void diagnoseStrayMetalRTOps(MetalRayTracingLegalizationContext& context)
     }
 }
 
+/// Does any entry point use one of the transform/object-space-ray
+/// intrinsics? Decides (with the forcing option) whether the module pays
+/// for world_space_data support. Must run after
+/// `inlineMetalRTOpsIntoEntryPoints` so helper-function uses are visible.
+static bool anyEntryPointUsesWorldSpaceData(List<EntryPointInfo>& entryPoints)
+{
+    for (auto& entryPoint : entryPoints)
+    {
+        for (auto block : entryPoint.entryPointFunc->getBlocks())
+        {
+            for (auto inst : block->getChildren())
+            {
+                switch (inst->getOp())
+                {
+#define CASE(OP, KEY) case kIROp_##OP:
+                    SLANG_METAL_RT_WS_SYSTEM_VALUE_OPS(CASE)
+#undef CASE
+                    return true;
+                default:
+                    break;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 void legalizeMetalRayTracing(
     IRModule* module,
     TargetProgram* targetProgram,
@@ -1753,6 +1829,14 @@ void legalizeMetalRayTracing(
     }
 
     inlineMetalRTOpsIntoEntryPoints(module);
+
+    // The transform/object-space-ray support is pay-for-use: enable it when
+    // any entry point (post-inlining) touches the corresponding intrinsics,
+    // or when forced for separate compilation.
+    context.usesWorldSpaceData =
+        targetProgram->getOptionSet().getBoolOption(
+            CompilerOptionName::MetalRTForceWorldSpaceData) ||
+        anyEntryPointUsesWorldSpaceData(entryPoints);
 
     // With every handler-side global reference now physically inside its
     // entry point, decide the layout of the user-resource tail of

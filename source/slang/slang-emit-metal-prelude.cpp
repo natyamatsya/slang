@@ -107,9 +107,8 @@ struct slang_RTGlobals;
 )";
 
 const char* MetalSourceEmitter::kMetalBuiltinPreludeRTTrace = R"(
-inline void _slang_rtTraceConfigure(
-    thread raytracing::intersector<raytracing::triangle_data, raytracing::instancing, raytracing::world_space_data>& i,
-    uint flags)
+template<typename Intersector>
+inline void _slang_rtTraceConfigure(thread Intersector& i, uint flags)
 {
     if (flags & 0x01) /* RAY_FLAG_FORCE_OPAQUE */
         i.force_opacity(raytracing::forced_opacity::opaque);
@@ -140,10 +139,6 @@ uint _slang_rtTraceCommit(thread Context* ctx, Result hit)
     ctx->instanceID = hit.user_instance_id;
     ctx->geometryIndex = hit.geometry_id;
     ctx->primitiveIndex = hit.primitive_id;
-    ctx->objectToWorld = hit.object_to_world_transform;
-    ctx->worldToObject = hit.world_to_object_transform;
-    ctx->objectRayOrigin = ctx->worldToObject * float4(ctx->origin, 1.0);
-    ctx->objectRayDirection = ctx->worldToObject * float4(ctx->direction, 0.0);
     if (hit.type == raytracing::intersection_type::triangle)
     {
         ctx->triBarycentrics = hit.triangle_barycentric_coord;
@@ -156,12 +151,12 @@ template<typename Context>
 uint _slang_rtTrace(
     thread Context* ctx,
     metal::raytracing::acceleration_structure<metal::raytracing::instancing> scene,
-    raytracing::intersection_function_table<raytracing::triangle_data, raytracing::instancing, raytracing::world_space_data> table,
+    raytracing::intersection_function_table<raytracing::triangle_data, raytracing::instancing> table,
     uint mask,
     uint flags)
 {
     raytracing::ray r(ctx->origin, ctx->direction, ctx->tMin, ctx->tMax);
-    raytracing::intersector<raytracing::triangle_data, raytracing::instancing, raytracing::world_space_data> i;
+    raytracing::intersector<raytracing::triangle_data, raytracing::instancing> i;
     _slang_rtTraceConfigure(i, flags);
     return _slang_rtTraceCommit(ctx, i.intersect(r, scene, mask, table, *ctx));
 }
@@ -173,9 +168,54 @@ uint _slang_rtTrace(
     uint flags)
 {
     raytracing::ray r(ctx->origin, ctx->direction, ctx->tMin, ctx->tMax);
-    raytracing::intersector<raytracing::triangle_data, raytracing::instancing, raytracing::world_space_data> i;
+    raytracing::intersector<raytracing::triangle_data, raytracing::instancing> i;
     _slang_rtTraceConfigure(i, flags);
     return _slang_rtTraceCommit(ctx, i.intersect(r, scene, mask));
+}
+)";
+
+// The world_space_data variant of the trace helper (pay-for-use): also
+// stores the committed instance transforms and the object-space ray into
+// the context, for ObjectToWorld*/WorldToObject*/ObjectRay* in closest-hit
+// shaders.
+const char* MetalSourceEmitter::kMetalBuiltinPreludeRTTraceWS = R"(
+template<typename Context, typename Result>
+uint _slang_rtTraceCommitWS(thread Context* ctx, Result hit)
+{
+    uint status = _slang_rtTraceCommit(ctx, hit);
+    if (status != 0u)
+    {
+        ctx->objectToWorld = hit.object_to_world_transform;
+        ctx->worldToObject = hit.world_to_object_transform;
+        ctx->objectRayOrigin = ctx->worldToObject * float4(ctx->origin, 1.0);
+        ctx->objectRayDirection = ctx->worldToObject * float4(ctx->direction, 0.0);
+    }
+    return status;
+}
+template<typename Context>
+uint _slang_rtTraceWS(
+    thread Context* ctx,
+    metal::raytracing::acceleration_structure<metal::raytracing::instancing> scene,
+    raytracing::intersection_function_table<raytracing::triangle_data, raytracing::instancing, raytracing::world_space_data> table,
+    uint mask,
+    uint flags)
+{
+    raytracing::ray r(ctx->origin, ctx->direction, ctx->tMin, ctx->tMax);
+    raytracing::intersector<raytracing::triangle_data, raytracing::instancing, raytracing::world_space_data> i;
+    _slang_rtTraceConfigure(i, flags);
+    return _slang_rtTraceCommitWS(ctx, i.intersect(r, scene, mask, table, *ctx));
+}
+template<typename Context>
+uint _slang_rtTraceWS(
+    thread Context* ctx,
+    metal::raytracing::acceleration_structure<metal::raytracing::instancing> scene,
+    uint mask,
+    uint flags)
+{
+    raytracing::ray r(ctx->origin, ctx->direction, ctx->tMin, ctx->tMax);
+    raytracing::intersector<raytracing::triangle_data, raytracing::instancing, raytracing::world_space_data> i;
+    _slang_rtTraceConfigure(i, flags);
+    return _slang_rtTraceCommitWS(ctx, i.intersect(r, scene, mask));
 }
 )";
 

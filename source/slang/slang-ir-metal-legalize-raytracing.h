@@ -21,6 +21,14 @@ class TargetProgram;
 /// keeps ordinary bindings.
 bool isMetalRayTracingHandlerStage(Stage stage);
 
+/// The Metal parameter attribute names for the instance transforms inside
+/// intersection functions. The legalizer tags the parameters it creates
+/// with these, and the emitter derives the `world_space_data` tag of the
+/// `[[intersection(...)]]` attribute from their presence — keeping the tag
+/// set and the signature in one place.
+inline const char* const kMetalRTObjectToWorldTransformAttr = "object_to_world_transform";
+inline const char* const kMetalRTWorldToObjectTransformAttr = "world_to_object_transform";
+
 /// Rewrite ray-tracing pipeline entry points and the transient `kIROp_MetalRT*`
 /// instructions into the Metal execution model specified by
 /// docs/design/metal-raytracing.md.
