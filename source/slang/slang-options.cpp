@@ -903,6 +903,14 @@ void initCommandOptions(CommandOptions& options)
          "-metal-rt-max-payload-size <bytes>",
          "Maximum size in bytes of the Metal ray-tracing payload blob (default 64). Part of "
          "the cross-stage ABI: every module linked into one pipeline must use the same value."},
+        {OptionKind::MetalRTGlobalsSlots,
+         "-metal-rt-globals-slots",
+         "-metal-rt-globals-slots <N>",
+         "For the Metal ray-tracing pipeline: lay out the user-resource tail of the "
+         "'slang_RTGlobals' argument buffer as exactly N 8-byte slots addressed by declared "
+         "register() number, so separately compiled modules agree on the layout by "
+         "construction. Part of the cross-stage ABI: every module linked into one pipeline "
+         "must use the same value."},
         {OptionKind::MetalRTForceWorldSpaceData,
          "-metal-rt-force-world-space-data",
          nullptr,
@@ -3879,6 +3887,7 @@ SlangResult OptionsParser::_parse(int argc, char const* const* argv)
             }
         case OptionKind::BindlessSpaceIndex:
         case OptionKind::MetalRTMaxPayloadSize:
+        case OptionKind::MetalRTGlobalsSlots:
         case OptionKind::SPIRVSamplerHeapStride:
         case OptionKind::SPIRVResourceHeapStride:
             {

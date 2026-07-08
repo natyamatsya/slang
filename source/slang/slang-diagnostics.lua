@@ -5725,7 +5725,7 @@ warning(
 -- Load semantic checking diagnostics (part 15) - Target code generation and platform-specific diagnostics
 -- (inlined from slang-diagnostics-semantic-checking-15.lua)
 
--- Metal or WGSL (56101-56117)
+-- Metal or WGSL (56101-56122)
 
 err(
     "resource-types-in-constant-buffer-in-parameter-block-not-allowed-on-metal",
@@ -5837,6 +5837,41 @@ err(
     56116,
     "resource binding collides with the reserved Metal ray-tracing system bindings",
     span { loc = "location", message = "global shader parameter '~paramName:IRInst' is bound at Metal buffer index ~bufferIndex, which collides with the buffer indices reserved for the ray-tracing system parameters (buffer(28) through buffer(30); see docs/design/metal-raytracing.md)." }
+)
+
+err(
+    "metal-raytracing-slots-missing-register",
+    56118,
+    "resource used by a Metal ray-tracing handler stage has no explicit register under slot-addressed globals",
+    span { loc = "location", message = "global shader parameter '~paramName:IRInst' is used by a ray-tracing handler stage but has no explicit 'register()' binding; under '-metal-rt-globals-slots' the register number is the resource's slot address in the 'slang_RTGlobals' argument buffer, so it must be declared explicitly (see docs/design/metal-raytracing-runtime-contract.md)." }
+)
+
+err(
+    "metal-raytracing-slots-out-of-range",
+    56119,
+    "resource register exceeds the Metal ray-tracing globals slot count",
+    span { loc = "location", message = "global shader parameter '~paramName:IRInst' is bound at register ~slotIndex, which is outside the ~slotCount slots requested with '-metal-rt-globals-slots' (see docs/design/metal-raytracing-runtime-contract.md)." }
+)
+
+err(
+    "metal-raytracing-slots-duplicate",
+    56120,
+    "two resources share one Metal ray-tracing globals slot",
+    span { loc = "location", message = "global shader parameters '~paramName:IRInst' and '~otherParamName:IRInst' both address slot ~slotIndex of the 'slang_RTGlobals' argument buffer; 't' and 'u' registers share one slot index space under '-metal-rt-globals-slots' (see docs/design/metal-raytracing-runtime-contract.md)." }
+)
+
+err(
+    "metal-raytracing-slots-register-space",
+    56121,
+    "register spaces are not supported under Metal ray-tracing slot-addressed globals",
+    span { loc = "location", message = "global shader parameter '~paramName:IRInst' uses a register space, which is not supported under '-metal-rt-globals-slots'; all slot-addressed resources must live in the default space (see docs/design/metal-raytracing-runtime-contract.md)." }
+)
+
+err(
+    "metal-raytracing-slots-not-addressable",
+    56122,
+    "resource kind cannot be slot-addressed in the Metal ray-tracing globals layout",
+    span { loc = "location", message = "global shader parameter '~paramName:IRInst' cannot be slot-addressed under '-metal-rt-globals-slots': only resources with an 8-byte argument-buffer encoding (buffers, textures, acceleration structures) are supported; samplers are excluded in v1 (see docs/design/metal-raytracing-runtime-contract.md)." }
 )
 
 -- SPIRV (57001-57007)

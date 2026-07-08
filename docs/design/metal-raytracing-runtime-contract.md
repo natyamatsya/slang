@@ -193,6 +193,12 @@ stage compile:
 
 ## 6. Work plan
 
+Implementation status: **C1 and C2 are implemented on `metal-rt-impl`**
+(the descriptor line and `-metal-rt-globals-slots`); C3 is next. One
+consuming-side note from C2: Slang's pre-existing warning 39029 (D3D
+register without a Vulkan binding) fires on `register()` declarations in
+Metal-only compiles — stage compiles should pass `-warnings-disable 39029`.
+
 Compiler (slang, `metal-rt-impl`):
 
 1. **C1 — descriptor**: the legalizer records its ABI decisions as a module
