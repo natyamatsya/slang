@@ -901,5 +901,9 @@ return {
 	["metalRTAcceptHitAndEndSearch"] = 925,
 	["metalRTIntersect"] = 926,
 	["Type.MetalIntersectionFunctionTable"] = 927,
-	["metalRTCallShader"] = 928
+	["metalRTCallShader"] = 928,
+	["metalRTObjectToWorld"] = 929,
+	["metalRTWorldToObject"] = 930,
+	["metalRTObjectRayOrigin"] = 931,
+	["metalRTObjectRayDirection"] = 932
 }

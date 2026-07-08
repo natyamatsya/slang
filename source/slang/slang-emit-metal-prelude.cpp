@@ -108,7 +108,7 @@ struct slang_RTGlobals;
 
 const char* MetalSourceEmitter::kMetalBuiltinPreludeRTTrace = R"(
 inline void _slang_rtTraceConfigure(
-    thread raytracing::intersector<raytracing::triangle_data, raytracing::instancing>& i,
+    thread raytracing::intersector<raytracing::triangle_data, raytracing::instancing, raytracing::world_space_data>& i,
     uint flags)
 {
     if (flags & 0x01) /* RAY_FLAG_FORCE_OPAQUE */
@@ -140,6 +140,10 @@ uint _slang_rtTraceCommit(thread Context* ctx, Result hit)
     ctx->instanceID = hit.user_instance_id;
     ctx->geometryIndex = hit.geometry_id;
     ctx->primitiveIndex = hit.primitive_id;
+    ctx->objectToWorld = hit.object_to_world_transform;
+    ctx->worldToObject = hit.world_to_object_transform;
+    ctx->objectRayOrigin = ctx->worldToObject * float4(ctx->origin, 1.0);
+    ctx->objectRayDirection = ctx->worldToObject * float4(ctx->direction, 0.0);
     if (hit.type == raytracing::intersection_type::triangle)
     {
         ctx->triBarycentrics = hit.triangle_barycentric_coord;
@@ -152,12 +156,12 @@ template<typename Context>
 uint _slang_rtTrace(
     thread Context* ctx,
     metal::raytracing::acceleration_structure<metal::raytracing::instancing> scene,
-    raytracing::intersection_function_table<raytracing::triangle_data, raytracing::instancing> table,
+    raytracing::intersection_function_table<raytracing::triangle_data, raytracing::instancing, raytracing::world_space_data> table,
     uint mask,
     uint flags)
 {
     raytracing::ray r(ctx->origin, ctx->direction, ctx->tMin, ctx->tMax);
-    raytracing::intersector<raytracing::triangle_data, raytracing::instancing> i;
+    raytracing::intersector<raytracing::triangle_data, raytracing::instancing, raytracing::world_space_data> i;
     _slang_rtTraceConfigure(i, flags);
     return _slang_rtTraceCommit(ctx, i.intersect(r, scene, mask, table, *ctx));
 }
@@ -169,7 +173,7 @@ uint _slang_rtTrace(
     uint flags)
 {
     raytracing::ray r(ctx->origin, ctx->direction, ctx->tMin, ctx->tMax);
-    raytracing::intersector<raytracing::triangle_data, raytracing::instancing> i;
+    raytracing::intersector<raytracing::triangle_data, raytracing::instancing, raytracing::world_space_data> i;
     _slang_rtTraceConfigure(i, flags);
     return _slang_rtTraceCommit(ctx, i.intersect(r, scene, mask));
 }

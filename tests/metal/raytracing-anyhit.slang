@@ -18,7 +18,7 @@ struct RayPayload
 // The kernel gains the intersection function table at its reserved binding,
 // and traversal passes it to the trace helper:
 // METAL: {{\[\[}}kernel{{\]\]}} void rayGenMain(
-// METAL-SAME: intersection_function_table<raytracing::triangle_data, raytracing::instancing> slang_rtIsect{{[^ ]*}} {{\[\[}}buffer(27){{\]\]}}
+// METAL-SAME: intersection_function_table<raytracing::triangle_data, raytracing::instancing, raytracing::world_space_data> slang_rtIsect{{[^ ]*}} {{\[\[}}buffer(27){{\]\]}}
 // METAL: _slang_rtTrace(&slang_rtCtx{{[^,]*}}, {{[^,]*}}, slang_rtIsect{{[^,]*}},
 [shader("raygeneration")]
 void rayGenMain()
@@ -39,7 +39,7 @@ void rayGenMain()
 // The anyhit shader becomes a bool-returning triangle intersection function
 // with the candidate state as tagged parameters and the context as the
 // ray_data payload reference:
-// METAL: {{\[\[}}intersection(triangle, raytracing::triangle_data, raytracing::instancing){{\]\]}} bool anyHitMain(
+// METAL: {{\[\[}}intersection(triangle, raytracing::triangle_data, raytracing::instancing, raytracing::world_space_data){{\]\]}} bool anyHitMain(
 // METAL-SAME: {{\[\[}}distance{{\]\]}}
 // METAL-SAME: {{\[\[}}barycentric_coord{{\]\]}}
 // METAL-SAME: {{\[\[}}front_facing{{\]\]}}

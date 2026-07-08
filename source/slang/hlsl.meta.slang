@@ -21327,6 +21327,14 @@ __intrinsic_op($(kIROp_MetalRTPrimitiveIndex))
 uint __metalRTPrimitiveIndex();
 __intrinsic_op($(kIROp_MetalRTHitKind))
 uint __metalRTHitKind();
+__intrinsic_op($(kIROp_MetalRTObjectToWorld))
+float4x3 __metalRTObjectToWorld();
+__intrinsic_op($(kIROp_MetalRTWorldToObject))
+float4x3 __metalRTWorldToObject();
+__intrinsic_op($(kIROp_MetalRTObjectRayOrigin))
+float3 __metalRTObjectRayOrigin();
+__intrinsic_op($(kIROp_MetalRTObjectRayDirection))
+float3 __metalRTObjectRayDirection();
 
 // 10.4.1 - Ray Dispatch System Values
 
@@ -21576,6 +21584,7 @@ float3 ObjectRayOrigin()
     case hlsl:  __intrinsic_asm "ObjectRayOrigin";
     case glsl: __intrinsic_asm "(gl_ObjectRayOriginEXT)";
     case cuda: __intrinsic_asm "optixGetObjectRayOrigin";
+    case metal: return __metalRTObjectRayOrigin();
     case spirv:
         return spirv_asm
         {
@@ -21597,6 +21606,7 @@ float3 ObjectRayDirection()
     case hlsl:  __intrinsic_asm "ObjectRayDirection";
     case glsl: __intrinsic_asm "(gl_ObjectRayDirectionEXT)";
     case cuda: __intrinsic_asm "optixGetObjectRayDirection";
+    case metal: return __metalRTObjectRayDirection();
     case spirv:
         return spirv_asm
         {
@@ -21612,12 +21622,13 @@ float3 ObjectRayDirection()
 /// @remarks Includes position and orientation of the current instance
 /// @category raytracing
 [NonUniformReturn]
-[require(cuda_glsl_hlsl_spirv, raytracing_anyhit_closesthit_intersection)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_anyhit_closesthit_intersection)]
 float3x4 ObjectToWorld3x4()
 {
     __target_switch
     {
     case hlsl:  __intrinsic_asm "ObjectToWorld3x4";
+    case metal: return transpose(__metalRTObjectToWorld());
     case glsl: __intrinsic_asm "transpose(gl_ObjectToWorldEXT)";
     case cuda: __intrinsic_asm "slangOptixGetObjectToWorldTransformMatrix";
     case spirv:
@@ -21634,12 +21645,13 @@ float3x4 ObjectToWorld3x4()
 /// @remarks Inverse of the object-to-world transform
 /// @category raytracing
 [NonUniformReturn]
-[require(cuda_glsl_hlsl_spirv, raytracing_anyhit_closesthit_intersection)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_anyhit_closesthit_intersection)]
 float3x4 WorldToObject3x4()
 {
     __target_switch
     {
     case hlsl:  __intrinsic_asm "WorldToObject3x4";
+    case metal: return transpose(__metalRTWorldToObject());
     case glsl: __intrinsic_asm "transpose(gl_WorldToObjectEXT)";
     case cuda: __intrinsic_asm "slangOptixGetWorldToObjectTransformMatrix";
     case spirv:
@@ -21656,12 +21668,13 @@ float3x4 WorldToObject3x4()
 /// @remarks Transposed version of ObjectToWorld3x4
 /// @category raytracing
 [NonUniformReturn]
-[require(cuda_glsl_hlsl_spirv, raytracing_anyhit_closesthit_intersection)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_anyhit_closesthit_intersection)]
 float4x3 ObjectToWorld4x3()
 {
     __target_switch
     {
     case hlsl:  __intrinsic_asm "ObjectToWorld4x3";
+    case metal: return __metalRTObjectToWorld();
     case glsl: __intrinsic_asm "(gl_ObjectToWorldEXT)";
     case cuda: __intrinsic_asm "slangOptixGetObjectToWorldTransformMatrix4x3";
     case spirv:
@@ -21677,12 +21690,13 @@ float4x3 ObjectToWorld4x3()
 /// @remarks Transposed version of WorldToObject3x4
 /// @category raytracing
 [NonUniformReturn]
-[require(cuda_glsl_hlsl_spirv, raytracing_anyhit_closesthit_intersection)]
+[require(cuda_glsl_hlsl_metal_spirv, raytracing_anyhit_closesthit_intersection)]
 float4x3 WorldToObject4x3()
 {
     __target_switch
     {
     case hlsl:  __intrinsic_asm "WorldToObject4x3";
+    case metal: return __metalRTWorldToObject();
     case glsl: __intrinsic_asm "(gl_WorldToObjectEXT)";
     case cuda: __intrinsic_asm "slangOptixGetWorldToObjectTransformMatrix4x3";
     case spirv:
