@@ -1363,6 +1363,13 @@ typedef uint32_t SlangSizeT;
         // such as using uniform parameters as mutable temporaries. Has no effect on other dialects.
         EnableExtendedHLSLBackwardsCompatibility = 163,
 
+
+        // Force the Metal ray-tracing kernel to receive the `slang_rtIsect`
+        // intersection function table binding even when no anyhit or
+        // intersection entry points are compiled in the same module, so
+        // separately compiled ray-generation modules can link against
+        // pipelines that use intersection functions. CLI: -metal-rt-force-isect-table.
+        MetalRTForceIsectTable = 164,
         // Do not assign an explicit value to CountOf. It must remain one past the last option,
         // which it derives implicitly from the preceding (highest-valued) enumerator.
         CountOf,
