@@ -398,9 +398,10 @@ Deviations from the text above — the runtime-visible ones first:
    have to append a context parameter to a handler entry point, since that
    would corrupt the fixed visible-function signature the kernel calls
    through. Ray-generation shaders keep full access to ordinary bindings.
-7. **Payload size is a fixed 64 bytes** (§4.1): the
-   `-metal-rt-max-payload-size` option is not implemented yet; exceeding the
-   blob is a compile-time error (E56112), as specified.
+7. **Payload size** (§4.1): 64 bytes by default, overridable with
+   `-metal-rt-max-payload-size <bytes>` as specified; exceeding the blob is
+   a compile-time error (E56112). The value is part of the cross-stage ABI:
+   every module linked into one pipeline must use the same setting.
 8. **`RayTCurrent()` in a miss shader** reads `ctx.hitT`, which the miss
    dispatch fills with the ray's `TMax` — one context field serves both the
    closest-hit and miss semantics of DXR.

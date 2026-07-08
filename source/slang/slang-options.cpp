@@ -945,6 +945,11 @@ void initCommandOptions(CommandOptions& options)
          "-fvk-use-gl-layout",
          nullptr,
          "Use std430 layout instead of D3D buffer layout for raw buffer load/stores."},
+        {OptionKind::MetalRTMaxPayloadSize,
+         "-metal-rt-max-payload-size",
+         "-metal-rt-max-payload-size <bytes>",
+         "Maximum size in bytes of the Metal ray-tracing payload blob (default 64). Part of "
+         "the cross-stage ABI: every module linked into one pipeline must use the same value."},
         {OptionKind::MetalRTForceIsectTable,
          "-metal-rt-force-isect-table",
          nullptr,
@@ -4073,6 +4078,7 @@ SlangResult OptionsParser::_parse(int argc, char const* const* argv)
                 break;
             }
         case OptionKind::BindlessSpaceIndex:
+        case OptionKind::MetalRTMaxPayloadSize:
         case OptionKind::SPIRVSamplerHeapStride:
         case OptionKind::SPIRVResourceHeapStride:
             {
