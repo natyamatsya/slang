@@ -13,12 +13,15 @@ class TargetProgram;
 /// Is `stage` one of the ray-tracing stages that the Metal target emits as a
 /// function invoked through a function table rather than as a kernel?
 ///
-/// Such functions have a fixed signature — for miss/closest-hit/callable the
-/// uniform handler ABI `void(slang_RTContext thread*, slang_RTGlobals
-/// device*)` of docs/design/metal-raytracing.md section 4.2 — so no pass may
-/// add parameters (e.g. resource bindings or a kernel context) to them. The
-/// ray-generation stage is not in this set: it becomes the compute kernel and
-/// keeps ordinary bindings.
+/// The legalizer owns these functions' signatures — the uniform handler ABI
+/// `void(slang_RTContext thread*, slang_RTGlobals device*)` of
+/// docs/design/metal-raytracing.md section 4.2 for miss/closest-hit/callable,
+/// and the tagged candidate parameters (plus, per-use, the trailing
+/// intersection-table globals buffer of the runtime contract's section 4)
+/// for anyhit/intersection — so no other pass may add parameters (e.g.
+/// resource bindings or a kernel context) to them. The ray-generation stage
+/// is not in this set: it becomes the compute kernel and keeps ordinary
+/// bindings.
 bool isMetalRayTracingHandlerStage(Stage stage);
 
 /// The Metal parameter attribute names for the instance transforms inside
