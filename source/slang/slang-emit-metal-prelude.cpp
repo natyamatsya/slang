@@ -117,6 +117,10 @@ inline void _slang_rtTraceConfigure(
         i.force_opacity(raytracing::forced_opacity::non_opaque);
     if (flags & 0x04) /* RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH */
         i.accept_any_intersection(true);
+    if (flags & 0x10) /* RAY_FLAG_CULL_BACK_FACING_TRIANGLES */
+        i.set_triangle_cull_mode(raytracing::triangle_cull_mode::back);
+    if (flags & 0x20) /* RAY_FLAG_CULL_FRONT_FACING_TRIANGLES */
+        i.set_triangle_cull_mode(raytracing::triangle_cull_mode::front);
     if (flags & 0x40) /* RAY_FLAG_CULL_OPAQUE */
         i.set_opacity_cull_mode(raytracing::opacity_cull_mode::opaque);
     if (flags & 0x80) /* RAY_FLAG_CULL_NON_OPAQUE */
