@@ -1757,6 +1757,106 @@ static bool anyEntryPointUsesWorldSpaceData(List<EntryPointInfo>& entryPoints)
     return false;
 }
 
+/// Find the implicit global constant buffer that the front end aggregates
+/// "loose" global uniforms into (e.g. `uniform float4 u_params[4];`),
+/// identified by the `GlobalParams` name hint on its element struct — the
+/// one name-based coupling to the front end's aggregation, spelled only
+/// here. Returns null when the module declares no loose uniforms. Both the
+/// ABI descriptor (`uniforms` presence/size, section 2 of the runtime
+/// contract) and the slots-mode `uniforms` header entry (section 3) key off
+/// this identity.
+static IRGlobalParam* findImplicitGlobalParamsBuffer(IRModule* module)
+{
+    for (auto inst : module->getGlobalInsts())
+    {
+        auto globalParam = as<IRGlobalParam>(inst);
+        if (!globalParam)
+            continue;
+        auto groupType = as<IRUniformParameterGroupType>(globalParam->getDataType());
+        if (!groupType)
+            continue;
+        auto nameHint = groupType->getElementType()->findDecoration<IRNameHintDecoration>();
+        if (nameHint && nameHint->getName() == kMetalRTImplicitUniformsStructName)
+            return globalParam;
+    }
+    return nullptr;
+}
+
+/// Record the module's cross-module ABI decisions as the machine-readable
+/// descriptor of the runtime-contract spec (section 2): one JSON line that
+/// the Metal emitter prints as the `// slang-metal-rt-abi:` comment. The
+/// legalizer writes it because the legalizer owns the decisions; the
+/// decoration is also the intended transport for a future reflection query.
+static void attachAbiDescriptor(
+    MetalRayTracingLegalizationContext& context,
+    bool hasRayGenerationEntryPoint)
+{
+    // The `uniforms` object is present when the implicit constant buffer
+    // exists in the module: the kernel binding (and, under slots mode, the
+    // header entry) exists regardless of whether any entry point ends up
+    // reading it, so existence — not use — is what the runtime must know.
+    IRIntegerValue uniformsSize = 0;
+    Int uniformsBufferIndex = -1;
+    if (auto globalParams = findImplicitGlobalParamsBuffer(context.module))
+    {
+        auto elementType =
+            as<IRUniformParameterGroupType>(globalParams->getDataType())->getElementType();
+        IRSizeAndAlignment sizeAndAlignment;
+        if (SLANG_SUCCEEDED(getNaturalSizeAndAlignment(
+                context.targetProgram->getTargetReq(),
+                (IRType*)elementType,
+                &sizeAndAlignment)))
+            uniformsSize = sizeAndAlignment.size;
+        if (auto layoutDecor = globalParams->findDecoration<IRLayoutDecoration>())
+        {
+            if (auto varLayout = as<IRVarLayout>(layoutDecor->getLayout()))
+            {
+                if (auto offsetAttr =
+                        varLayout->findOffsetAttr(LayoutResourceKind::MetalBuffer))
+                    uniformsBufferIndex = (Int)offsetAttr->getOffset();
+            }
+        }
+    }
+
+    StringBuilder json;
+    json << "{\"v\":1";
+    json << ",\"payload\":" << context.maxPayloadSize;
+    json << ",\"attr\":" << kMetalRTMaxAttributeSize;
+    json << ",\"ws\":" << (context.usesWorldSpaceData ? 1 : 0);
+    json << ",\"isect\":" << (context.hasIntersectionStages ? 1 : 0);
+    // Slot-addressed globals layout arrives with the spec's C2 phase; 0 is
+    // the usage-derived layout of the base design.
+    json << ",\"slots\":0";
+    if (hasRayGenerationEntryPoint)
+    {
+        json << ",\"sys\":{\"handlers\":" << kMetalRTHandlersBufferIndex
+             << ",\"sbt\":" << kMetalRTSbtBufferIndex
+             << ",\"globals\":" << kMetalRTGlobalsBufferIndex
+             << ",\"isect\":" << kMetalRTIsectBufferIndex << "}";
+    }
+    if (uniformsSize != 0)
+    {
+        json << ",\"uniforms\":{";
+        if (hasRayGenerationEntryPoint)
+        {
+            // The presence rules require the buffer index in ray-generation
+            // modules; a missing layout offset would be a malformed module,
+            // not a shape to degrade around.
+            SLANG_RELEASE_ASSERT(uniformsBufferIndex >= 0);
+            json << "\"buf\":" << uniformsBufferIndex << ",";
+        }
+        json << "\"size\":" << uniformsSize << "}";
+    }
+    json << "}";
+
+    IRBuilder builder(context.module);
+    IRInst* textOperand = builder.getStringValue(json.getUnownedSlice());
+    builder.addDecoration(
+        context.module->getModuleInst(),
+        kIROp_MetalRTAbiDecoration,
+        textOperand);
+}
+
 void legalizeMetalRayTracing(
     IRModule* module,
     TargetProgram* targetProgram,
@@ -1868,6 +1968,8 @@ void legalizeMetalRayTracing(
         lowerMetalRTOpsInFunc(context, func, info);
 
     diagnoseStrayMetalRTOps(context);
+
+    attachAbiDescriptor(context, rayGenEntryPoints.getCount() != 0);
 }
 
 } // namespace Slang

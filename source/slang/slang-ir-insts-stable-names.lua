@@ -907,5 +907,6 @@ return {
 	["metalRTObjectToWorld"] = 931,
 	["metalRTWorldToObject"] = 932,
 	["metalRTObjectRayOrigin"] = 933,
-	["metalRTObjectRayDirection"] = 934
+	["metalRTObjectRayDirection"] = 934,
+	["Decoration.metalRTAbi"] = 935
 }
