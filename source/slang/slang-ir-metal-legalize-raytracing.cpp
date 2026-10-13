@@ -458,10 +458,8 @@ static void ensureSharedTypes(MetalRayTracingLegalizationContext& context)
     context.hitBaseKey = addField(sbtType, "hitBase", uintType);
     context.callableBaseKey = addField(sbtType, "callableBase", uintType);
     addField(sbtType, "hitStride", uintType);
-    context.instanceSbtOffsetsKey = addField(
-        sbtType,
-        "instanceSbtOffsets",
-        builder.getPtrType(uintType, AddressSpace::Global));
+    context.instanceSbtOffsetsKey =
+        addField(sbtType, "instanceSbtOffsets", builder.getPtrType(uintType, AddressSpace::Global));
 
     // The return type of a bounding-box intersection function; the field
     // attributes are Metal's fixed protocol for accepting a candidate hit.
@@ -507,8 +505,7 @@ static void ensureSharedTypes(MetalRayTracingLegalizationContext& context)
     }
     else
     {
-        context.isectTableType =
-            (IRType*)builder.getType(kIROp_MetalIntersectionFunctionTableType);
+        context.isectTableType = (IRType*)builder.getType(kIROp_MetalIntersectionFunctionTableType);
     }
 
     context.globalsHandlersKey = addField(globalsType, "handlers", context.visibleTableType);
@@ -564,8 +561,7 @@ static IRParam* addSystemParam(
 static List<IRParam*> collectEntryPointParams(IRFunc* func)
 {
     List<IRParam*> params;
-    for (auto param = func->getFirstBlock()->getFirstParam(); param;
-         param = param->getNextParam())
+    for (auto param = func->getFirstBlock()->getFirstParam(); param; param = param->getNextParam())
         params.add(param);
     return params;
 }
@@ -699,12 +695,8 @@ static void processRayGenerationEntryPoint(
         uint3Type,
         "slang_rtLaunchIndex",
         String("thread_position_in_grid"));
-    auto tdimParam = addSystemParam(
-        builder,
-        func,
-        uint3Type,
-        "slang_rtLaunchDim",
-        String("threads_per_grid"));
+    auto tdimParam =
+        addSystemParam(builder, func, uint3Type, "slang_rtLaunchDim", String("threads_per_grid"));
 
     // The context lives in the kernel's thread address space and is threaded
     // by pointer through every handler call.
@@ -983,10 +975,7 @@ static void hoistHandlerGlobals(
             StringBuilder slotName;
             slotName << "slang_rtSlot" << slot;
             auto key = createPinnedStructKey(builder, slotName.getUnownedSlice());
-            builder.createStructField(
-                context.globalsStructType,
-                key,
-                builder.getUInt64Type());
+            builder.createStructField(context.globalsStructType, key, builder.getUInt64Type());
         }
     }
 }
@@ -1269,12 +1258,8 @@ static IRInst* addIntersectionFunctionContextParam(
     IRFunc* func,
     MetalRayTracingLegalizationContext::RTEntryInfo& info)
 {
-    auto ctxParam = addSystemParam(
-        builder,
-        func,
-        context.ctxRayDataPtrType,
-        "slang_rtCtx",
-        String("payload"));
+    auto ctxParam =
+        addSystemParam(builder, func, context.ctxRayDataPtrType, "slang_rtCtx", String("payload"));
     info.ctxPtr = ctxParam;
     return ctxParam;
 }
@@ -1291,9 +1276,7 @@ static IRInst* addIntersectionFunctionContextParam(
 /// the trailing globals-buffer parameter (per-use: functions that reference
 /// nothing declare nothing, and the runtime binds intersection-table buffer
 /// slot 0 unconditionally either way).
-static bool funcReferencesHoistedGlobal(
-    MetalRayTracingLegalizationContext& context,
-    IRFunc* func)
+static bool funcReferencesHoistedGlobal(MetalRayTracingLegalizationContext& context, IRFunc* func)
 {
     for (auto block : func->getBlocks())
         for (auto inst : block->getChildren())
@@ -1421,9 +1404,7 @@ static void processAnyHitEntryPoint(MetalRayTracingLegalizationContext& context,
 /// intersection function returning `slang_RTBBoxResult`. The user's code
 /// reports hits through `ReportHit`, which the op lowering turns into the
 /// accept/reject protocol; falling off the end reports no hit.
-static void processIntersectionEntryPoint(
-    MetalRayTracingLegalizationContext& context,
-    IRFunc* func)
+static void processIntersectionEntryPoint(MetalRayTracingLegalizationContext& context, IRFunc* func)
 {
     ensureSharedTypes(context);
 
@@ -1603,11 +1584,8 @@ static void emitHandlerTableCall(
     MetalRayTracingLegalizationContext::RTEntryInfo& entryInfo,
     IRInst* recordIndex)
 {
-    IRInst* callArgs[] = {
-        entryInfo.handlerTable,
-        recordIndex,
-        entryInfo.ctxPtr,
-        entryInfo.globalsPtr};
+    IRInst* callArgs[] =
+        {entryInfo.handlerTable, recordIndex, entryInfo.ctxPtr, entryInfo.globalsPtr};
     builder.emitIntrinsicInst(builder.getVoidType(), kIROp_MetalRTHandlerCall, 4, callArgs);
 }
 
@@ -1671,9 +1649,7 @@ static void lowerTraceRayOp(
     auto typedBlobAddr = emitPayloadBlobPack(context, builder, ctxPtr, payloadPtr, inst);
 
     IRInst* status = nullptr;
-    auto wsFlag = builder.getIntValue(
-        builder.getIntType(),
-        context.usesWorldSpaceData ? 1 : 0);
+    auto wsFlag = builder.getIntValue(builder.getIntType(), context.usesWorldSpaceData ? 1 : 0);
     if (entryInfo.isectTable)
     {
         IRInst* intersectArgs[] = {
@@ -1724,8 +1700,7 @@ static void lowerTraceRayOp(
         recordIndex = builder.emitAdd(
             uintType,
             recordIndex,
-            builder
-                .emitMul(uintType, inst->getMultiplierForGeometryContribution(), geometryIndex));
+            builder.emitMul(uintType, inst->getMultiplierForGeometryContribution(), geometryIndex));
         recordIndex = builder.emitAdd(uintType, recordIndex, instanceContribution);
 
         // DXR RAY_FLAG_SKIP_CLOSEST_HIT_SHADER (0x08) suppresses only the
@@ -1880,9 +1855,8 @@ static void lowerMetalRTOpsInFunc(
                 // table here is out-of-contract.
                 if (!entryInfo.handlerTable)
                 {
-                    context.sink->diagnose(
-                        Diagnostics::MetalRaytracingIntrinsicOutsideEntryPoint{
-                            .location = getDiagnosticPos(inst)});
+                    context.sink->diagnose(Diagnostics::MetalRaytracingIntrinsicOutsideEntryPoint{
+                        .location = getDiagnosticPos(inst)});
                     inst->removeAndDeallocate();
                     continue;
                 }
@@ -1896,9 +1870,8 @@ static void lowerMetalRTOpsInFunc(
             {
                 if (entryInfo.stage != Stage::Intersection)
                 {
-                    context.sink->diagnose(
-                        Diagnostics::MetalRaytracingIntrinsicOutsideEntryPoint{
-                            .location = getDiagnosticPos(inst)});
+                    context.sink->diagnose(Diagnostics::MetalRaytracingIntrinsicOutsideEntryPoint{
+                        .location = getDiagnosticPos(inst)});
                     inst->replaceUsesWith(builder.getBoolValue(false));
                     inst->removeAndDeallocate();
                     continue;
@@ -1910,9 +1883,8 @@ static void lowerMetalRTOpsInFunc(
             {
                 if (entryInfo.stage != Stage::AnyHit)
                 {
-                    context.sink->diagnose(
-                        Diagnostics::MetalRaytracingIntrinsicOutsideEntryPoint{
-                            .location = getDiagnosticPos(inst)});
+                    context.sink->diagnose(Diagnostics::MetalRaytracingIntrinsicOutsideEntryPoint{
+                        .location = getDiagnosticPos(inst)});
                     inst->removeAndDeallocate();
                     continue;
                 }
@@ -1980,9 +1952,8 @@ static void diagnoseStrayMetalRTOps(MetalRayTracingLegalizationContext& context)
             {
                 if (isMetalRTOp(opInst))
                 {
-                    context.sink->diagnose(
-                        Diagnostics::MetalRaytracingIntrinsicOutsideEntryPoint{
-                            .location = getDiagnosticPos(opInst)});
+                    context.sink->diagnose(Diagnostics::MetalRaytracingIntrinsicOutsideEntryPoint{
+                        .location = getDiagnosticPos(opInst)});
                     return;
                 }
             }
@@ -2080,10 +2051,7 @@ static void attachAbiDescriptor(
 
     IRBuilder builder(context.module);
     IRInst* textOperand = builder.getStringValue(json.getUnownedSlice());
-    builder.addDecoration(
-        context.module->getModuleInst(),
-        kIROp_MetalRTAbiDecoration,
-        textOperand);
+    builder.addDecoration(context.module->getModuleInst(), kIROp_MetalRTAbiDecoration, textOperand);
 }
 
 void legalizeMetalRayTracing(
@@ -2096,8 +2064,8 @@ void legalizeMetalRayTracing(
     context.module = module;
     context.targetProgram = targetProgram;
     context.sink = sink;
-    if (auto optionSize = targetProgram->getOptionSet().getIntOption(
-            CompilerOptionName::MetalRTMaxPayloadSize))
+    if (auto optionSize =
+            targetProgram->getOptionSet().getIntOption(CompilerOptionName::MetalRTMaxPayloadSize))
         context.maxPayloadSize = optionSize;
     context.globalsSlots =
         targetProgram->getOptionSet().getIntOption(CompilerOptionName::MetalRTGlobalsSlots);
@@ -2143,10 +2111,9 @@ void legalizeMetalRayTracing(
     if (!anyRTEntryPoints)
         return;
 
-    context.hasIntersectionStages = anyHitEntryPoints.getCount() != 0 ||
-                                    intersectionEntryPoints.getCount() != 0 ||
-                                    targetProgram->getOptionSet().getBoolOption(
-                                        CompilerOptionName::MetalRTForceIsectTable);
+    context.hasIntersectionStages =
+        anyHitEntryPoints.getCount() != 0 || intersectionEntryPoints.getCount() != 0 ||
+        targetProgram->getOptionSet().getBoolOption(CompilerOptionName::MetalRTForceIsectTable);
 
     // The raygen kernel's system parameters live at fixed buffer indices;
     // user bindings must stay below them. The intersection function table
@@ -2155,8 +2122,7 @@ void legalizeMetalRayTracing(
     {
         checkForReservedBufferIndexCollisions(
             context,
-            context.hasIntersectionStages ? kMetalRTIsectBufferIndex
-                                          : kMetalRTGlobalsBufferIndex);
+            context.hasIntersectionStages ? kMetalRTIsectBufferIndex : kMetalRTGlobalsBufferIndex);
     }
 
     inlineMetalRTOpsIntoEntryPoints(module);
@@ -2164,10 +2130,9 @@ void legalizeMetalRayTracing(
     // The transform/object-space-ray support is pay-for-use: enable it when
     // any entry point (post-inlining) touches the corresponding intrinsics,
     // or when forced for separate compilation.
-    context.usesWorldSpaceData =
-        targetProgram->getOptionSet().getBoolOption(
-            CompilerOptionName::MetalRTForceWorldSpaceData) ||
-        anyEntryPointUsesWorldSpaceData(entryPoints);
+    context.usesWorldSpaceData = targetProgram->getOptionSet().getBoolOption(
+                                     CompilerOptionName::MetalRTForceWorldSpaceData) ||
+                                 anyEntryPointUsesWorldSpaceData(entryPoints);
 
     // With every handler-side global reference now physically inside its
     // entry point, decide the layout of the user-resource tail of
