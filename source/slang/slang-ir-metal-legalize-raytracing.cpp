@@ -40,10 +40,11 @@ static const int kHitKindTriangleBackFace = 255;
 // prelude helper (mirroring `metal::raytracing::intersection_type`).
 static const int kMetalRTCommittedNone = 0;
 
-// The DXR system-value reader ops and the `slang_RTContext` field each one
-// loads. This table is the single source of truth relating the two: it
-// expands into both the op classification (`isMetalRTOp`) and the lowering
-// (`getContextKeyForReaderOp`). Inside anyhit and intersection functions,
+// The DXR system-value fields and the `slang_RTContext` field each one loads.
+// This table is the single source of truth relating a `MetalRTContextField`
+// selector to its context key: it drives the lowering (`getContextKeyForField`)
+// and the per-entry override preload. Reads are a single parameterized
+// `metalRTReadContextField(field)` op. Inside anyhit and intersection functions,
 // where Metal supplies the candidate state as tagged parameters, a per-entry
 // override table takes precedence over the context field.
 //
@@ -59,26 +60,31 @@ static const int kMetalRTCommittedNone = 0;
 // support (their reader ops cannot appear in that case).
 //
 // clang-format off
-#define SLANG_METAL_RT_WS_SYSTEM_VALUE_OPS(M)       \
-    M(MetalRTObjectToWorld,          objectToWorldKey)      \
-    M(MetalRTWorldToObject,          worldToObjectKey)      \
-    M(MetalRTObjectRayOrigin,        objectRayOriginKey)    \
-    M(MetalRTObjectRayDirection,     objectRayDirectionKey)
+// Each entry pairs a `MetalRTContextField` selector (its `MetalRTField_<NAME>`
+// enumerator, carried as operand 0 of the `metalRTReadContextField` op) with the
+// `slang_RTContext` struct key that field reads. The world_space_data subset is
+// kept separate because its keys are null unless the module opts into
+// world_space_data (see the guards at the use sites).
+#define SLANG_METAL_RT_WS_CONTEXT_FIELDS(M)            \
+    M(ObjectToWorld,          objectToWorldKey)        \
+    M(WorldToObject,          worldToObjectKey)        \
+    M(ObjectRayOrigin,        objectRayOriginKey)      \
+    M(ObjectRayDirection,     objectRayDirectionKey)
 
-#define SLANG_METAL_RT_SYSTEM_VALUE_OPS(M)          \
-    M(MetalRTDispatchRaysIndex,      launchIndexKey)    \
-    M(MetalRTDispatchRaysDimensions, launchDimKey)      \
-    M(MetalRTWorldRayOrigin,         originKey)         \
-    M(MetalRTWorldRayDirection,      directionKey)      \
-    M(MetalRTRayTMin,                tMinKey)           \
-    M(MetalRTRayTCurrent,            hitTKey)           \
-    M(MetalRTRayFlags,               rayFlagsKey)       \
-    M(MetalRTInstanceIndex,          instanceIndexKey)  \
-    M(MetalRTInstanceID,             instanceIDKey)     \
-    M(MetalRTGeometryIndex,          geometryIndexKey)  \
-    M(MetalRTPrimitiveIndex,         primitiveIndexKey) \
-    M(MetalRTHitKind,                hitKindKey)        \
-    SLANG_METAL_RT_WS_SYSTEM_VALUE_OPS(M)
+#define SLANG_METAL_RT_CONTEXT_FIELDS(M)               \
+    M(DispatchRaysIndex,      launchIndexKey)          \
+    M(DispatchRaysDimensions, launchDimKey)            \
+    M(WorldRayOrigin,         originKey)               \
+    M(WorldRayDirection,      directionKey)            \
+    M(RayTMin,                tMinKey)                 \
+    M(RayTCurrent,            hitTKey)                 \
+    M(RayFlags,               rayFlagsKey)             \
+    M(InstanceIndex,          instanceIndexKey)        \
+    M(InstanceID,             instanceIDKey)           \
+    M(GeometryIndex,          geometryIndexKey)        \
+    M(PrimitiveIndex,         primitiveIndexKey)       \
+    M(HitKind,                hitKindKey)              \
+    SLANG_METAL_RT_WS_CONTEXT_FIELDS(M)
 // clang-format on
 
 namespace
@@ -227,30 +233,29 @@ static bool isMetalRTOp(IRInst* inst)
 {
     switch (inst->getOp())
     {
-#define CASE(OP, KEY) case kIROp_##OP:
-        SLANG_METAL_RT_SYSTEM_VALUE_OPS(CASE)
-#undef CASE
+    case kIROp_MetalRTReadContextField:
     case kIROp_MetalRTTraceRay:
     case kIROp_MetalRTCallShader:
     case kIROp_MetalRTReportHit:
-    case kIROp_MetalRTIgnoreHit:
-    case kIROp_MetalRTAcceptHitAndEndSearch:
+    case kIROp_MetalRTHitDecision:
         return true;
     default:
         return false;
     }
 }
 
-/// Map a `metalRT*` system-value reader op to the `slang_RTContext` field it
-/// reads. Returns null for ops that are not plain readers.
-static IRStructKey* getContextKeyForReaderOp(MetalRayTracingLegalizationContext& context, IROp op)
+/// Map a `MetalRTContextField` selector (operand 0 of a `metalRTReadContextField`
+/// op) to the `slang_RTContext` struct key it reads. Returns null for a
+/// world_space_data field when the module has not opted into world_space_data
+/// (its key is then null), and asserts on an unknown selector.
+static IRStructKey* getContextKeyForField(MetalRayTracingLegalizationContext& context, int field)
 {
-    switch (op)
+    switch ((MetalRTContextField)field)
     {
-#define CASE(OP, KEY) \
-    case kIROp_##OP:  \
+#define CASE(NAME, KEY)       \
+    case MetalRTField_##NAME: \
         return context.KEY;
-        SLANG_METAL_RT_SYSTEM_VALUE_OPS(CASE)
+        SLANG_METAL_RT_CONTEXT_FIELDS(CASE)
 #undef CASE
     default:
         return nullptr;
@@ -1063,12 +1068,12 @@ static void processHandlerEntryPoint(
     // later reads must not observe the nested state. Unused snapshots are
     // removed by DCE.
 // Transform-family keys are null when the module does not opt into
-// world_space_data; their reader ops cannot appear in that case.
-#define CASE(OP, KEY)                          \
-    if (context.KEY)                           \
-        info.readerOverrides[kIROp_##OP] =     \
+// world_space_data; their reads cannot appear in that case.
+#define CASE(NAME, KEY)                             \
+    if (context.KEY)                                \
+        info.readerOverrides[MetalRTField_##NAME] = \
             builder.emitLoad(builder.emitFieldAddress(ctxParam, context.KEY));
-    SLANG_METAL_RT_SYSTEM_VALUE_OPS(CASE)
+    SLANG_METAL_RT_CONTEXT_FIELDS(CASE)
 #undef CASE
 
     // Dispatch state for nested TraceRay/CallShader, read from the globals
@@ -1210,10 +1215,10 @@ static void addIntersectionFunctionCommonParams(
     // hold committed state only after intersect() returns).
     auto objOriginParam =
         addSystemParam(builder, func, float3Type, "slang_rtObjOrigin", String("origin"));
-    info.readerOverrides[kIROp_MetalRTObjectRayOrigin] = objOriginParam;
+    info.readerOverrides[MetalRTField_ObjectRayOrigin] = objOriginParam;
     auto objDirectionParam =
         addSystemParam(builder, func, float3Type, "slang_rtObjDirection", String("direction"));
-    info.readerOverrides[kIROp_MetalRTObjectRayDirection] = objDirectionParam;
+    info.readerOverrides[MetalRTField_ObjectRayDirection] = objDirectionParam;
     if (context.usesWorldSpaceData)
     {
         // The transform parameter tags require the world_space_data
@@ -1225,33 +1230,33 @@ static void addIntersectionFunctionCommonParams(
             float4x3Type,
             "slang_rtObjectToWorld",
             String(kMetalRTObjectToWorldTransformAttr));
-        info.readerOverrides[kIROp_MetalRTObjectToWorld] = objectToWorldParam;
+        info.readerOverrides[MetalRTField_ObjectToWorld] = objectToWorldParam;
         auto worldToObjectParam = addSystemParam(
             builder,
             func,
             float4x3Type,
             "slang_rtWorldToObject",
             String(kMetalRTWorldToObjectTransformAttr));
-        info.readerOverrides[kIROp_MetalRTWorldToObject] = worldToObjectParam;
+        info.readerOverrides[MetalRTField_WorldToObject] = worldToObjectParam;
     }
 
     const struct
     {
-        IROp readerOp;
+        MetalRTContextField field;
         IRType* type;
         const char* name;
         const char* metalAttribute;
     } commonParams[] = {
-        {kIROp_MetalRTPrimitiveIndex, uintType, "slang_rtPrimitiveIndex", "primitive_id"},
-        {kIROp_MetalRTInstanceIndex, uintType, "slang_rtInstanceIndex", "instance_id"},
-        {kIROp_MetalRTInstanceID, uintType, "slang_rtInstanceID", "user_instance_id"},
-        {kIROp_MetalRTGeometryIndex, uintType, "slang_rtGeometryIndex", "geometry_id"},
+        {MetalRTField_PrimitiveIndex, uintType, "slang_rtPrimitiveIndex", "primitive_id"},
+        {MetalRTField_InstanceIndex, uintType, "slang_rtInstanceIndex", "instance_id"},
+        {MetalRTField_InstanceID, uintType, "slang_rtInstanceID", "user_instance_id"},
+        {MetalRTField_GeometryIndex, uintType, "slang_rtGeometryIndex", "geometry_id"},
     };
     for (auto& spec : commonParams)
     {
         auto param =
             addSystemParam(builder, func, spec.type, spec.name, String(spec.metalAttribute));
-        info.readerOverrides[spec.readerOp] = param;
+        info.readerOverrides[spec.field] = param;
     }
 }
 
@@ -1350,7 +1355,7 @@ static void processAnyHitEntryPoint(MetalRayTracingLegalizationContext& context,
         String("front_facing"));
     auto ctxParam = addIntersectionFunctionContextParam(context, builder, func, info);
     addIntersectionFunctionGlobalsParam(context, builder, func);
-    info.readerOverrides[kIROp_MetalRTRayTCurrent] = distanceParam;
+    info.readerOverrides[MetalRTField_RayTCurrent] = distanceParam;
 
     builder.setInsertBefore(firstBlock->getFirstOrdinaryInst());
 
@@ -1360,7 +1365,7 @@ static void processAnyHitEntryPoint(MetalRayTracingLegalizationContext& context,
         builder.getIntValue(uintType, kHitKindTriangleFrontFace),
         builder.getIntValue(uintType, kHitKindTriangleBackFace)};
     auto hitKind = builder.emitIntrinsicInst(uintType, kIROp_Select, 3, hitKindArgs);
-    info.readerOverrides[kIROp_MetalRTHitKind] = hitKind;
+    info.readerOverrides[MetalRTField_HitKind] = hitKind;
 
     List<IRParam*> paramsToRemove;
     for (auto param : oldParams)
@@ -1439,8 +1444,8 @@ static void processIntersectionEntryPoint(
     addIntersectionFunctionGlobalsParam(context, builder, func);
     info.isectMinT = minTParam;
     info.isectMaxT = maxTParam;
-    info.readerOverrides[kIROp_MetalRTRayTMin] = minTParam;
-    info.readerOverrides[kIROp_MetalRTRayTCurrent] = maxTParam;
+    info.readerOverrides[MetalRTField_RayTMin] = minTParam;
+    info.readerOverrides[MetalRTField_RayTCurrent] = maxTParam;
 
     // Falling off the end of an intersection shader reports no hit.
     auto bboxResultType = context.bboxResultType;
@@ -1901,8 +1906,7 @@ static void lowerMetalRTOpsInFunc(
                 lowerReportHitOp(context, entryInfo, cast<IRMetalRTReportHit>(inst));
             }
             break;
-        case kIROp_MetalRTIgnoreHit:
-        case kIROp_MetalRTAcceptHitAndEndSearch:
+        case kIROp_MetalRTHitDecision:
             {
                 if (entryInfo.stage != Stage::AnyHit)
                 {
@@ -1912,31 +1916,39 @@ static void lowerMetalRTOpsInFunc(
                     inst->removeAndDeallocate();
                     continue;
                 }
-                // IgnoreHit rejects the candidate. AcceptHitAndEndSearch
-                // accepts it; the search only actually ends when the ray was
-                // traced with RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
+                // Operand 0 is the accept/reject decision: false (IgnoreHit)
+                // rejects the candidate, true (AcceptHitAndEndSearch) accepts
+                // it. The search only actually ends when the ray was traced
+                // with RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
                 // (`accept_any_intersection` in the intersector), see the
                 // design doc's section 4.5.
-                bool accepts = inst->getOp() == kIROp_MetalRTAcceptHitAndEndSearch;
+                bool accepts = getIntVal(inst->getOperand(0)) != 0;
                 replaceInstWithReturn(builder, inst, builder.getBoolValue(accepts));
             }
             break;
-        default:
+        case kIROp_MetalRTReadContextField:
             {
+                // Operand 0 is the MetalRTContextField selector. A handler that
+                // preloads its context values (or an anyhit/intersection stage
+                // that receives candidate state as tagged parameters) registers
+                // an override per field; otherwise read the context field.
+                int field = (int)getIntVal(inst->getOperand(0));
                 IRInst* overrideValue = nullptr;
-                if (entryInfo.readerOverrides.tryGetValue((int)inst->getOp(), overrideValue))
+                if (entryInfo.readerOverrides.tryGetValue(field, overrideValue))
                 {
                     inst->replaceUsesWith(overrideValue);
                     inst->removeAndDeallocate();
                     continue;
                 }
-                auto key = getContextKeyForReaderOp(context, inst->getOp());
+                auto key = getContextKeyForField(context, field);
                 SLANG_ASSERT(key);
                 builder.setInsertBefore(inst);
                 auto value = builder.emitLoad(builder.emitFieldAddress(entryInfo.ctxPtr, key));
                 inst->replaceUsesWith(value);
                 inst->removeAndDeallocate();
             }
+            break;
+        default:
             break;
         }
     }
@@ -1990,10 +2002,12 @@ static bool anyEntryPointUsesWorldSpaceData(List<EntryPointInfo>& entryPoints)
         {
             for (auto inst : block->getChildren())
             {
-                switch (inst->getOp())
+                if (inst->getOp() != kIROp_MetalRTReadContextField)
+                    continue;
+                switch ((MetalRTContextField)(int)getIntVal(inst->getOperand(0)))
                 {
-#define CASE(OP, KEY) case kIROp_##OP:
-                    SLANG_METAL_RT_WS_SYSTEM_VALUE_OPS(CASE)
+#define CASE(NAME, KEY) case MetalRTField_##NAME:
+                    SLANG_METAL_RT_WS_CONTEXT_FIELDS(CASE)
 #undef CASE
                     return true;
                 default:

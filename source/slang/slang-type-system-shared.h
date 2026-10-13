@@ -176,6 +176,33 @@ enum class AddressSpace : uint64_t
     UserPointer = 0x100000001ULL,
 };
 
+// Selector operand of the `metalRTReadContextField` IR op: it identifies which
+// `slang_RTContext` field a DXR ray-tracing system-value read lowers to. We use
+// one parameterized reader op rather than a distinct op per system value;
+// hlsl.meta.slang splices these values into the `case metal:` arms via `$(...)`,
+// and the Metal ray-tracing legalizer maps each back to the context struct key
+// (see SLANG_METAL_RT_CONTEXT_FIELDS in slang-ir-metal-legalize-raytracing.cpp).
+// A plain enum (not enum class) so the splice yields a plain integer operand.
+enum MetalRTContextField
+{
+    MetalRTField_DispatchRaysIndex,
+    MetalRTField_DispatchRaysDimensions,
+    MetalRTField_WorldRayOrigin,
+    MetalRTField_WorldRayDirection,
+    MetalRTField_RayTMin,
+    MetalRTField_RayTCurrent,
+    MetalRTField_RayFlags,
+    MetalRTField_InstanceIndex,
+    MetalRTField_InstanceID,
+    MetalRTField_GeometryIndex,
+    MetalRTField_PrimitiveIndex,
+    MetalRTField_HitKind,
+    MetalRTField_ObjectToWorld,
+    MetalRTField_WorldToObject,
+    MetalRTField_ObjectRayOrigin,
+    MetalRTField_ObjectRayDirection,
+};
+
 // https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#_scope_id
 // must be 32 bit to match SPIR-V
 enum class MemoryScope : int32_t

@@ -1703,24 +1703,10 @@ local insts = {
 	-- `metalRTHandlerCall` through the visible function table. Only
 	-- `metalRTHandlerCall` survives to the Metal emitter.
 	--
-	-- Readers for DXR system values; each lowers to a load of the
-	-- corresponding `slang_RTContext` field.
-	{ metalRTDispatchRaysIndex = {} },
-	{ metalRTDispatchRaysDimensions = {} },
-	{ metalRTWorldRayOrigin = {} },
-	{ metalRTWorldRayDirection = {} },
-	{ metalRTRayTMin = {} },
-	{ metalRTRayTCurrent = {} },
-	{ metalRTRayFlags = {} },
-	{ metalRTInstanceIndex = {} },
-	{ metalRTInstanceID = {} },
-	{ metalRTGeometryIndex = {} },
-	{ metalRTPrimitiveIndex = {} },
-	{ metalRTHitKind = {} },
-	{ metalRTObjectToWorld = {} },
-	{ metalRTWorldToObject = {} },
-	{ metalRTObjectRayOrigin = {} },
-	{ metalRTObjectRayDirection = {} },
+	-- Reader for a DXR system value. Operand 0 is a `MetalRTContextField`
+	-- selector; the op lowers to a load of the corresponding `slang_RTContext`
+	-- field (one parameterized op instead of one op per system value).
+	{ metalRTReadContextField = { min_operands = 1 } },
 	-- The full `TraceRay` call: traversal through the acceleration structure
 	-- followed by the shader-binding-table dispatch of the closest-hit or
 	-- miss shader.
@@ -1752,8 +1738,7 @@ local insts = {
 		},
 	},
 	-- DXR `IgnoreHit()` / `AcceptHitAndEndSearch()` in an anyhit shader.
-	{ metalRTIgnoreHit = {} },
-	{ metalRTAcceptHitAndEndSearch = {} },
+	{ metalRTHitDecision = { min_operands = 1 } },
 	-- DXR `CallShader(shaderIndex, payload)`: dispatch of a callable shader
 	-- through the visible function table.
 	{
