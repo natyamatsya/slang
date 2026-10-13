@@ -20911,9 +20911,9 @@ int __rayPayloadLocation(__ref Payload payload);
 // (invoking any linked anyhit/intersection functions), computing the
 // shader-binding-table record index of the closest-hit or miss shader, and
 // calling it through the `slang_rtHandlers` visible function table. The
-// `__metalRTReportHit` / `__metalRTIgnoreHit` / `__metalRTAcceptHitAndEndSearch`
-// intrinsics become the accept/reject protocol of Metal intersection
-// functions. See docs/design/metal-raytracing.md, sections 4.5 and 5.
+// `__metalRTReportHit` and `__metalRTHitDecision` intrinsics become the
+// accept/reject protocol of Metal intersection functions. See
+// docs/design/metal-raytracing.md, sections 4.5 and 5.
 __generic<payload_t>
 __intrinsic_op($(kIROp_MetalRTTraceRay))
 void __metalRTTraceRay(
@@ -20933,11 +20933,14 @@ __generic<attr_t>
 __intrinsic_op($(kIROp_MetalRTReportHit))
 bool __metalRTReportHit(float tHit, uint hitKind, attr_t attributes);
 
-__intrinsic_op($(kIROp_MetalRTIgnoreHit))
-void __metalRTIgnoreHit();
-
-__intrinsic_op($(kIROp_MetalRTAcceptHitAndEndSearch))
-void __metalRTAcceptHitAndEndSearch();
+// IgnoreHit and AcceptHitAndEndSearch both end an anyhit invocation with an
+// accept/reject decision; `accepts` is 0 for IgnoreHit, 1 for
+// AcceptHitAndEndSearch. The legalizer turns this into the intersection
+// function's `return <accepts != 0>`. The operand is a plain `int` (not `bool`)
+// so it lowers to an integer literal the legalizer reads with `getIntVal`,
+// matching metalRTReadContextField's field selector.
+__intrinsic_op($(kIROp_MetalRTHitDecision))
+void __metalRTHitDecision(int accepts);
 
 __generic<payload_t>
 __intrinsic_op($(kIROp_MetalRTCallShader))
@@ -21255,7 +21258,7 @@ void IgnoreHit()
     case hlsl: __intrinsic_asm "IgnoreHit";
     case glsl: __intrinsic_asm "ignoreIntersectionEXT;";
     case cuda: __intrinsic_asm "optixIgnoreIntersection";
-    case metal: __metalRTIgnoreHit();
+    case metal: __metalRTHitDecision(0);
     case spirv:
         spirv_asm
         {
@@ -21276,7 +21279,7 @@ void AcceptHitAndEndSearch()
     case hlsl: __intrinsic_asm "AcceptHitAndEndSearch";
     case glsl: __intrinsic_asm "terminateRayEXT;";
     case cuda: __intrinsic_asm "optixTerminateRay";
-    case metal: __metalRTAcceptHitAndEndSearch();
+    case metal: __metalRTHitDecision(1);
     case spirv:
         spirv_asm
         {
@@ -21303,38 +21306,15 @@ void AcceptHitAndEndSearch()
 // intersection functions, where Metal supplies the candidate state as
 // tagged parameters (`[[distance]]`, `[[primitive_id]]`, ...) — to the
 // corresponding parameter value.
-__intrinsic_op($(kIROp_MetalRTDispatchRaysIndex))
-uint3 __metalRTDispatchRaysIndex();
-__intrinsic_op($(kIROp_MetalRTDispatchRaysDimensions))
-uint3 __metalRTDispatchRaysDimensions();
-__intrinsic_op($(kIROp_MetalRTWorldRayOrigin))
-float3 __metalRTWorldRayOrigin();
-__intrinsic_op($(kIROp_MetalRTWorldRayDirection))
-float3 __metalRTWorldRayDirection();
-__intrinsic_op($(kIROp_MetalRTRayTMin))
-float __metalRTRayTMin();
-__intrinsic_op($(kIROp_MetalRTRayTCurrent))
-float __metalRTRayTCurrent();
-__intrinsic_op($(kIROp_MetalRTRayFlags))
-uint __metalRTRayFlags();
-__intrinsic_op($(kIROp_MetalRTInstanceIndex))
-uint __metalRTInstanceIndex();
-__intrinsic_op($(kIROp_MetalRTInstanceID))
-uint __metalRTInstanceID();
-__intrinsic_op($(kIROp_MetalRTGeometryIndex))
-uint __metalRTGeometryIndex();
-__intrinsic_op($(kIROp_MetalRTPrimitiveIndex))
-uint __metalRTPrimitiveIndex();
-__intrinsic_op($(kIROp_MetalRTHitKind))
-uint __metalRTHitKind();
-__intrinsic_op($(kIROp_MetalRTObjectToWorld))
-float4x3 __metalRTObjectToWorld();
-__intrinsic_op($(kIROp_MetalRTWorldToObject))
-float4x3 __metalRTWorldToObject();
-__intrinsic_op($(kIROp_MetalRTObjectRayOrigin))
-float3 __metalRTObjectRayOrigin();
-__intrinsic_op($(kIROp_MetalRTObjectRayDirection))
-float3 __metalRTObjectRayDirection();
+// One parameterized reader op covers every DXR system value: the `field`
+// operand (a `MetalRTContextField` value, spliced into each `case metal:` arm)
+// selects which `slang_RTContext` field this read lowers to, and the generic
+// result type `T` is the system value's type (uint3 for the launch index,
+// float3 for the ray origin, float4x3 for a transform, ...). The legalizer maps
+// `field` back to the context struct key.
+__generic<T>
+__intrinsic_op($(kIROp_MetalRTReadContextField))
+T __metalRTReadContextField(int field);
 
 // 10.4.1 - Ray Dispatch System Values
 
@@ -21351,7 +21331,7 @@ uint3 DispatchRaysIndex()
     case hlsl: __intrinsic_asm "DispatchRaysIndex";
     case glsl: __intrinsic_asm "(gl_LaunchIDEXT)";
     case cuda: __intrinsic_asm "optixGetLaunchIndex";
-    case metal: return __metalRTDispatchRaysIndex();
+    case metal: return __metalRTReadContextField<uint3>($(MetalRTField_DispatchRaysIndex));
     case spirv:
         return spirv_asm
         {
@@ -21372,7 +21352,7 @@ uint3 DispatchRaysDimensions()
     case hlsl:  __intrinsic_asm "DispatchRaysDimensions";
     case glsl: __intrinsic_asm "(gl_LaunchSizeEXT)";
     case cuda: __intrinsic_asm "optixGetLaunchDimensions";
-    case metal: return __metalRTDispatchRaysDimensions();
+    case metal: return __metalRTReadContextField<uint3>($(MetalRTField_DispatchRaysDimensions));
     case spirv:
         return spirv_asm
         {
@@ -21396,7 +21376,7 @@ float3 WorldRayOrigin()
     case hlsl:  __intrinsic_asm "WorldRayOrigin";
     case glsl: __intrinsic_asm "(gl_WorldRayOriginEXT)";
     case cuda: __intrinsic_asm "optixGetWorldRayOrigin";
-    case metal: return __metalRTWorldRayOrigin();
+    case metal: return __metalRTReadContextField<float3>($(MetalRTField_WorldRayOrigin));
     case spirv:
         return spirv_asm
         {
@@ -21418,7 +21398,7 @@ float3 WorldRayDirection()
     case hlsl:  __intrinsic_asm "WorldRayDirection";
     case glsl: __intrinsic_asm "(gl_WorldRayDirectionEXT)";
     case cuda: __intrinsic_asm "optixGetWorldRayDirection";
-    case metal: return __metalRTWorldRayDirection();
+    case metal: return __metalRTReadContextField<float3>($(MetalRTField_WorldRayDirection));
     case spirv:
         return spirv_asm
         {
@@ -21440,7 +21420,7 @@ float RayTMin()
     case hlsl:  __intrinsic_asm "RayTMin";
     case glsl: __intrinsic_asm "(gl_RayTminEXT)";
     case cuda: __intrinsic_asm "optixGetRayTmin";
-    case metal: return __metalRTRayTMin();
+    case metal: return __metalRTReadContextField<float>($(MetalRTField_RayTMin));
     case spirv:
         return spirv_asm
         {
@@ -21473,7 +21453,7 @@ float RayTCurrent()
     case hlsl:  __intrinsic_asm "RayTCurrent";
     case glsl: __intrinsic_asm "(gl_RayTmaxEXT)";
     case cuda: __intrinsic_asm "optixGetRayTmax";
-    case metal: return __metalRTRayTCurrent();
+    case metal: return __metalRTReadContextField<float>($(MetalRTField_RayTCurrent));
     case spirv:
         return spirv_asm
         {
@@ -21494,7 +21474,7 @@ uint RayFlags()
     case hlsl:  __intrinsic_asm "RayFlags";
     case glsl: __intrinsic_asm "(gl_IncomingRayFlagsEXT)";
     case cuda: __intrinsic_asm "optixGetRayFlags";
-    case metal: return __metalRTRayFlags();
+    case metal: return __metalRTReadContextField<uint>($(MetalRTField_RayFlags));
     case spirv:
         return spirv_asm
         {
@@ -21518,7 +21498,7 @@ uint InstanceIndex()
     case hlsl:  __intrinsic_asm "InstanceIndex";
     case glsl: __intrinsic_asm "(gl_InstanceID)";
     case cuda: __intrinsic_asm "optixGetInstanceIndex";
-    case metal: return __metalRTInstanceIndex();
+    case metal: return __metalRTReadContextField<uint>($(MetalRTField_InstanceIndex));
     case spirv:
         return spirv_asm
         {
@@ -21540,7 +21520,7 @@ uint InstanceID()
     case hlsl:  __intrinsic_asm "InstanceID";
     case glsl: __intrinsic_asm "(gl_InstanceCustomIndexEXT)";
     case cuda: __intrinsic_asm "optixGetInstanceId";
-    case metal: return __metalRTInstanceID();
+    case metal: return __metalRTReadContextField<uint>($(MetalRTField_InstanceID));
     case spirv:
         return spirv_asm
         {
@@ -21562,7 +21542,7 @@ uint PrimitiveIndex()
     case hlsl:  __intrinsic_asm "PrimitiveIndex";
     case glsl: __intrinsic_asm "(gl_PrimitiveID)";
     case cuda: __intrinsic_asm "optixGetPrimitiveIndex";
-    case metal: return __metalRTPrimitiveIndex();
+    case metal: return __metalRTReadContextField<uint>($(MetalRTField_PrimitiveIndex));
     case spirv:
         return spirv_asm
         {
@@ -21584,7 +21564,7 @@ float3 ObjectRayOrigin()
     case hlsl:  __intrinsic_asm "ObjectRayOrigin";
     case glsl: __intrinsic_asm "(gl_ObjectRayOriginEXT)";
     case cuda: __intrinsic_asm "optixGetObjectRayOrigin";
-    case metal: return __metalRTObjectRayOrigin();
+    case metal: return __metalRTReadContextField<float3>($(MetalRTField_ObjectRayOrigin));
     case spirv:
         return spirv_asm
         {
@@ -21606,7 +21586,7 @@ float3 ObjectRayDirection()
     case hlsl:  __intrinsic_asm "ObjectRayDirection";
     case glsl: __intrinsic_asm "(gl_ObjectRayDirectionEXT)";
     case cuda: __intrinsic_asm "optixGetObjectRayDirection";
-    case metal: return __metalRTObjectRayDirection();
+    case metal: return __metalRTReadContextField<float3>($(MetalRTField_ObjectRayDirection));
     case spirv:
         return spirv_asm
         {
@@ -21628,7 +21608,7 @@ float3x4 ObjectToWorld3x4()
     __target_switch
     {
     case hlsl:  __intrinsic_asm "ObjectToWorld3x4";
-    case metal: return transpose(__metalRTObjectToWorld());
+    case metal: return transpose(__metalRTReadContextField<float4x3>($(MetalRTField_ObjectToWorld)));
     case glsl: __intrinsic_asm "transpose(gl_ObjectToWorldEXT)";
     case cuda: __intrinsic_asm "slangOptixGetObjectToWorldTransformMatrix";
     case spirv:
@@ -21651,7 +21631,7 @@ float3x4 WorldToObject3x4()
     __target_switch
     {
     case hlsl:  __intrinsic_asm "WorldToObject3x4";
-    case metal: return transpose(__metalRTWorldToObject());
+    case metal: return transpose(__metalRTReadContextField<float4x3>($(MetalRTField_WorldToObject)));
     case glsl: __intrinsic_asm "transpose(gl_WorldToObjectEXT)";
     case cuda: __intrinsic_asm "slangOptixGetWorldToObjectTransformMatrix";
     case spirv:
@@ -21674,7 +21654,7 @@ float4x3 ObjectToWorld4x3()
     __target_switch
     {
     case hlsl:  __intrinsic_asm "ObjectToWorld4x3";
-    case metal: return __metalRTObjectToWorld();
+    case metal: return __metalRTReadContextField<float4x3>($(MetalRTField_ObjectToWorld));
     case glsl: __intrinsic_asm "(gl_ObjectToWorldEXT)";
     case cuda: __intrinsic_asm "slangOptixGetObjectToWorldTransformMatrix4x3";
     case spirv:
@@ -21696,7 +21676,7 @@ float4x3 WorldToObject4x3()
     __target_switch
     {
     case hlsl:  __intrinsic_asm "WorldToObject4x3";
-    case metal: return __metalRTWorldToObject();
+    case metal: return __metalRTReadContextField<float4x3>($(MetalRTField_WorldToObject));
     case glsl: __intrinsic_asm "(gl_WorldToObjectEXT)";
     case cuda: __intrinsic_asm "slangOptixGetWorldToObjectTransformMatrix4x3";
     case spirv:
@@ -21894,7 +21874,7 @@ uint HitKind()
     case hlsl:  __intrinsic_asm "HitKind";
     case glsl: __intrinsic_asm "(gl_HitKindEXT)";
     case cuda:  __intrinsic_asm "optixGetHitKind";
-    case metal: return __metalRTHitKind();
+    case metal: return __metalRTReadContextField<uint>($(MetalRTField_HitKind));
     case spirv:
         return spirv_asm
         {
@@ -22429,7 +22409,7 @@ uint GeometryIndex()
     case hlsl: __intrinsic_asm "GeometryIndex";
     case glsl: __intrinsic_asm "(gl_GeometryIndexEXT)";
     case cuda: __intrinsic_asm "optixGetSbtGASIndex";
-    case metal: return __metalRTGeometryIndex();
+    case metal: return __metalRTReadContextField<uint>($(MetalRTField_GeometryIndex));
     case spirv: return spirv_asm {
             result:$$uint = OpLoad builtin(RayGeometryIndexKHR:uint);
         };
